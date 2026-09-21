@@ -78,6 +78,16 @@ def test_child_failure_captures_unicode_stderr(portable, tmp_path):
     assert code == 7 and "依赖加载失败" in log.read_text(encoding="utf-8")
 
 
+def test_child_ignores_host_python_environment(portable, tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONHOME", "/does-not-exist-host-python")
+    monkeypatch.setenv("PYTHONPATH", "/does-not-exist-host-packages")
+    log = tmp_path / "isolated.log"
+    code = portable.execute(
+        ["-c", "import sys; assert sys.flags.isolated; print('isolated')"], tmp_path, log
+    )
+    assert code == 0 and log.read_text().strip() == "isolated"
+
+
 @pytest.mark.parametrize("damaged", [False, True])
 def test_diagnosis_does_not_touch_settings_or_fetch_missing_model(
     portable, tmp_path, monkeypatch, damaged

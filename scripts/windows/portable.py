@@ -35,7 +35,7 @@ def execute(arguments: list[str], root: Path, log: Path, timeout=None) -> int:
     with log.open("wb") as output:
         try:
             result = subprocess.run(
-                [sys.executable, "-B", "-X", "utf8", *arguments],
+                [sys.executable, "-I", "-B", "-X", "utf8", *arguments],
                 cwd=root,
                 stdout=output,
                 stderr=subprocess.STDOUT,
@@ -156,7 +156,8 @@ def main(argv=None, root=None) -> int:
         code = execute(arguments, root, log)
         if code:
             print(f"PinchPilot exited with code {code}. See {log}")
-            print("Run Diagnose.cmd and send its report folder with your feedback.")
+            suffix = ".cmd" if sys.platform == "win32" else ".command"
+            print(f"Run Diagnose{suffix} and send its report folder with your feedback.")
         return code
     except Exception:
         details = traceback.format_exc()
@@ -165,7 +166,8 @@ def main(argv=None, root=None) -> int:
             (folder / f"{stamp}-launcher-error.log").write_text(details, encoding="utf-8")
         except OSError:
             pass
-        print("Extract the whole ZIP to a writable folder, then run Start.cmd again.")
+        suffix = ".cmd" if sys.platform == "win32" else ".command"
+        print(f"Extract the whole ZIP to a writable folder, then run Start{suffix} again.")
         return 1
 
 

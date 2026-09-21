@@ -2,6 +2,18 @@
 
 日期：2026-09-21。当前是本地桌面测试版 v0.8.1；没有发布到远程仓库，没有执行 GitHub Actions，也没有提交 Canvas。
 
+## v0.8.1 Mac 便携归档
+
+按用户要求留档 Apple Silicon 版本，应用行为保持 v0.8.1。包内 Python 为经官方发行资产 SHA-256 核对的 python-build-standalone 3.11.15，项目依赖从带哈希的锁文件安装；最低目标 macOS 14，由所选 NumPy/SciPy wheel 标签决定。没有复用开发机虚拟环境，也没有修改之前交付的 Windows ZIP。
+
+- **262 passed**，ruff 与格式检查通过。新增验证子进程忽略外部 PYTHONHOME/PYTHONPATH，防止已有 Python 环境干扰便携启动。
+- 40 个发行包（包括应用和 Python 自带的包管理组件）通过 wheel 标签和依赖闭包检查；935 个 Mach-O 文件均包含 arm64，保留 123 份 license/notice 文件。保留可执行权限及运行库符号链接，记录全部普通文件哈希与独立链接清单。
+- 用系统解压器将归档解压到新的中文、空格临时路径，逐文件验证哈希；实际执行归档内 Python，确认 OpenCV、MediaPipe、NumPy、SciPy、PySide6、PyObjC 框架和 PinchPilot 都从解压目录导入。PATH 不含 uv，并故意设置无效的外部 Python 环境变量，仍通过。
+- 实际执行包内 Diagnose.command：模型校验、依赖导入、空白合成帧 CPU 推理、离屏演示窗口与定时退出全部通过。另验证普通桌面入口启动和退出，查看截图确认版本为 0.8.1，相机关闭、鼠标未接管。
+- 包内附当前提交的源码 ZIP、构建脚本、依赖锁、运行时/模型来源、逐文件 SHA-256 与外层归档校验值。没有带入个人设置或试用记录；源代码提交与是否有未提交修改在 BUILD_INFO.json 中记录。
+
+证据在 `reports/verification/macos-0.8.1/`。本机为 macOS 26.6.2 arm64；未验证全部旧版 macOS。没有打开摄像头、发送系统输入、变更权限或重启用户正在使用的窗口。本包为便携目录，不是签名公证安装器；使用与留档方法见 [Mac 归档说明](MACOS_ARCHIVE.md)。
+
 ## v0.8.1 Windows 便携测试包
 
 按用户要求为组员制作 Windows 10/11 x64 便携 ZIP。内含 CPython 3.12.10、29 个锁定的第三方发行包、PinchPilot 应用代码与经哈希校验的官方手部模型。`Start.cmd` 打开桌面工具，`Demo.cmd` 仅演示，`Diagnose.cmd` 产生本地报告；相机和真实鼠标仍默认关闭。

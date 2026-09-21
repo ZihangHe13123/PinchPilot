@@ -15,13 +15,14 @@ PinchPilot's Python application code is independently implemented for this cours
 | [Core Graphics CGEventType](https://developer.apple.com/documentation/coregraphics/cgeventtype) | Native mouse button and dragged-event types. |
 
 The project's wheel/source package does not embed dependency binaries. The Windows
-portable ZIP additionally includes unmodified upstream Python and dependency binaries,
+and Mac portable ZIPs additionally include upstream Python and dependency binaries,
 their original license/notice files, and the verified hand model. `BUILD_INFO.json`
 lists versions, provenance, hashes and license locations; `FILES.sha256` inventories
 the distribution. Application Python source and replaceable dependency directories
 remain available in `runtime/Lib/site-packages`.
 
-Python's license is in `runtime/LICENSE.txt`; each dependency's licenses remain in
+Python's license is in `runtime/LICENSE.txt` (Windows) or
+`runtime/lib/python3.11/LICENSE.txt` (Mac); each dependency's licenses remain in
 its `.dist-info/licenses` or package directory. Qt/PySide6 source and distribution
 information: [Qt for Python](https://code.qt.io/cgit/pyside/pyside-setup.git/),
 [Qt source archives](https://download.qt.io/archive/qt/),
@@ -30,7 +31,13 @@ The optional Microsoft VC++ runtime installer is copied unchanged from its offic
 download endpoint and is only run if the tester chooses it. Its own installer
 presents Microsoft's terms.
 
-Source launches fetch the hand-landmarker task separately; Windows portable launches
+The Mac archive uses a pinned release of
+[python-build-standalone](https://github.com/astral-sh/python-build-standalone),
+the same Python runtime family used by uv. Its exact release asset and checksum are
+recorded in `BUILD_INFO.json`. The archive retains upstream license files and uses
+independently replaceable Python packages rather than a frozen executable.
+
+Source launches fetch the hand-landmarker task separately; portable launches
 use the bundled identical file. Its source is Google's versioned model storage:
 
 `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`

@@ -8,6 +8,8 @@
 
 Windows 组员使用 `PinchPilot-0.8.1-Windows-x64.zip`：全部解压后双击 **Start.cmd**，无需安装 Python/uv，模型随包附带。详见 [Windows 试用说明](docs/WINDOWS_TRIAL.md)。
 
+Mac 留档使用 `PinchPilot-0.8.1-macOS-arm64.zip`：适用于 M 系列 Mac、macOS 14+，解压后双击 **Start.command**。同样带齐运行环境和模型，并含源码快照；详见 [Mac 归档说明](docs/MACOS_ARCHIVE.md)。构建命令：`uv run python scripts/build_macos_portable.py`。
+
 源码方式：Mac 双击 **launch_desktop_mac.command**；Windows 双击 **launch_desktop_windows.cmd**。或在项目目录执行：
 
 ```sh
