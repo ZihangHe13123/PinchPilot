@@ -4,9 +4,9 @@
 
 当前实现用手掌移动定位，拇指与食指捏合点击、捏住移动拖拽，V 手势上下移动滚动。前臂支撑下的可用性、动作成本计量及更小动作的自训练识别仍需验证；详见 [新目标与研究设计](docs/superpowers/specs/2026-09-21-minimal-motion-design.md)。
 
-新设计包含“只主动动一根食指”的候选，比较停留点击和轻微屈指点击；它尚未成为当前版本功能。
+新增“只主动动一根食指”的两个 demo：**轻弯再恢复，主动点击**；**停住 0.8 秒，自动点击**。两者使用食指相对手掌的小幅移动定位，先在应用内比较，捏合仍是默认主方案。详见 [两个单指 Demo 的试用步骤](docs/SINGLE_FINGER_DEMOS.md)。
 
-**当前原型版本为 v0.2.0。** 已实现小幅移动与休息后恢复、预览、手势状态机、Mac/Windows 系统接口、人工标签采集、个人阈值校准、Random Forest/SVM 训练、独立分组评测，以及点击/拖拽任务。尚无项目真人训练数据；ML 的准确率、误触率和舒适度尚未得到验证。
+**当前原型版本为 v0.3.0。** 已实现两个单指点击 demo、小幅移动与休息后恢复、预览、手势状态机、Mac/Windows 系统接口、人工标签采集、个人阈值校准、Random Forest/SVM 训练、独立分组评测，以及点击/拖拽任务。单指仅支持应用内定位、点击、暂停，暂不接系统鼠标或原捏合训练集。尚无项目真人训练数据；ML 的准确率、误触率和舒适度尚未得到验证。
 
 ## 立即启动
 
@@ -26,6 +26,26 @@ uv run pinchpilot gui
 6. 先在「点击与拖拽实验」中练习。要控制桌面时，再点击「启用系统鼠标控制」。
 
 Esc 停止系统控制并暂停手势；也可点击「停止全部」。丢手超过 0.2 秒会释放按键，恢复后需先张开手。首版限定单手、主屏，不包含右键、缩放、多屏、动态手势网络和完整鼠标替代功能。
+
+## 试用两个单指 Demo
+
+先退出旧窗口，再双击 `launch_flex_mac.command` 试主动轻弯，或 `launch_dwell_mac.command` 试停留点击。Windows 使用对应的 `launch_flex_windows.cmd` / `launch_dwell_windows.cmd`。这些入口只选择模式，不自动打开相机。
+
+启动摄像头 → 让前臂获得支撑、手部保持可见 → 舒展食指片刻 → 切到「点击与拖拽实验」→「开始 8 个目标」。也可以从右上方的模式选择框随时切换。**只需要主动操作食指，但不能只露出孤立指尖。** 如果舒适手位不在相机视野内，需先调整机位；本轮不声称软件已经解决悬臂疲劳。
+
+| 模式 | 点击操作 | 反馈与参数 |
+|---|---|---|
+| 单指 · 轻弯点击 | 定位后轻弯，再恢复；恢复确认时点击一次 | 弯曲时冻结指针；可选较轻、默认、更明显的点击幅度 |
+| 单指 · 停留点击 | 先移动，停住等进度环完成 | 默认 0.8 秒，可调 0.4–2 秒；移开取消，点击后需移开才能再点击 |
+
+两种模式都有三档移动灵敏度、重新定位和 Esc 暂停。修改参数或切换模式结束当前任务，请重新开始一轮。练习结果保存在 `reports/tasks/`，含模式和参数；合成演示带独立来源标记。
+
+```sh
+uv run pinchpilot gui --interaction finger-flex
+uv run pinchpilot gui --interaction finger-dwell
+# 无相机回放仅用于查看交互逻辑：
+uv run pinchpilot gui --interaction finger-dwell --demo
+```
 
 ## 小幅移动与休息
 
@@ -108,6 +128,7 @@ uv run pinchpilot calibrate --participant P01 --output data/profiles/P01.json
 uv run ruff check src tests
 uv run pytest -q
 uv run pinchpilot gui --demo --smoke-seconds 3
+uv run python scripts/check_single_finger.py
 ```
 
 - [项目定位、课程要求与里程碑](docs/PROJECT_PLAN.md)
@@ -115,6 +136,7 @@ uv run pinchpilot gui --demo --smoke-seconds 3
 - [验证记录与待实测事项](docs/VALIDATION.md)
 - [设计与模块边界](docs/superpowers/specs/2026-09-21-pinchpilot-design.md)
 - [小幅移动设计](docs/superpowers/specs/2026-09-21-small-motion-design.md)
+- [单指 Demo 操作与试用记录](docs/SINGLE_FINGER_DEMOS.md)
 - [少动作、小幅度的目标与指标](docs/superpowers/specs/2026-09-21-minimal-motion-design.md)
 - [参考与第三方组件](THIRD_PARTY.md)
 

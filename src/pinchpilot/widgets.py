@@ -34,6 +34,16 @@ CONNECTIONS = [
 ]
 
 
+def draw_progress(painter, point, progress):
+    if progress is None:
+        return
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(QPen(QColor("#ffce83"), 3))
+    painter.drawArc(
+        QRectF(point.x() - 16, point.y() - 16, 32, 32), 90 * 16, -int(360 * 16 * progress)
+    )
+
+
 class CameraView(QWidget):
     def __init__(self):
         super().__init__()
@@ -99,7 +109,11 @@ class CameraView(QWidget):
             for i, point in enumerate(points):
                 p.drawEllipse(point, 5 if i in (4, 8) else 3, 5 if i in (4, 8) else 3)
             p.setPen(QPen(QColor("#ffce83"), 3))
-            p.drawLine(points[4], points[8])
+            if self.result and self.result.mode != "pinch":
+                for a, b in ((5, 6), (6, 7), (7, 8)):
+                    p.drawLine(points[a], points[b])
+            else:
+                p.drawLine(points[4], points[8])
         elif self.image is None:
             p.setPen(QColor("#b5c8d9"))
             p.drawText(
@@ -109,7 +123,15 @@ class CameraView(QWidget):
             )
         p.setPen(QColor("#d9e8ef"))
         p.drawText(
-            20, 28, "合成动作演示 · 不代表识别效果" if self.demo else "镜像预览 · 虚线内映射至主屏"
+            20,
+            28,
+            "合成动作演示 · 不代表识别效果"
+            if self.demo
+            else (
+                "镜像预览 · 食指相对掌部定位"
+                if self.result and self.result.mode != "pinch"
+                else "镜像预览 · 虚线内映射至主屏"
+            ),
         )
         if self.result and self.result.pointer:
             x, y = self.result.pointer
@@ -123,6 +145,7 @@ class CameraView(QWidget):
             )
             p.setClipRect(area)
             p.drawEllipse(point, 10, 10)
+            draw_progress(p, point, self.result.progress)
         p.end()
 
 
@@ -144,6 +167,8 @@ class PracticeView(QWidget):
         self.rows = []
         self.path = None
         self.metadata = {}
+        self.feedback_progress = None
+        self.feedback_hint = ""
         self.target_list = [
             (0.75, 0.25),
             (0.25, 0.70),
@@ -173,6 +198,8 @@ class PracticeView(QWidget):
         self.active, self.virtual, self.task = True, virtual, task
         self.index, self.misses, self.rows = 0, 0, []
         self.pressed = self.dragging = False
+        self.pointer = tuple(metadata.get("initial_pointer") or (0.5, 0.5))
+        self.feedback_progress = None
         self.started = self.trial_started = time.monotonic()
         self.progress.emit("第 1 / 8 个目标")
         self.update()
@@ -235,12 +262,19 @@ class PracticeView(QWidget):
     def feed(self, result: EngineResult):
         if not self.virtual:
             return
+        self.feedback_progress = result.progress
+        self.feedback_hint = result.hint
+        if result.pointer is not None:
+            self.pointer = result.pointer
         for event in result.events:
             if event.kind in ("move", "down", "up"):
                 self._event(event.kind, (event.x, event.y))
+        self.update()
 
     def cancel_press(self):
         self.pressed = self.dragging = False
+        self.feedback_progress = None
+        self.feedback_hint = ""
         self.update()
 
     def stop(self, completed=False):
@@ -315,5 +349,14 @@ class PracticeView(QWidget):
             x, y = self.pointer
             p.setPen(QPen(QColor("#ffffff"), 2))
             p.setBrush(QColor("#ffce83") if self.pressed else QColor("#299cac"))
-            p.drawEllipse(QPointF(x * self.width(), y * self.height()), 8, 8)
+            point = QPointF(x * self.width(), y * self.height())
+            p.drawEllipse(point, 8, 8)
+            draw_progress(p, point, self.feedback_progress)
+            if self.feedback_hint:
+                p.setPen(QColor("#c0d6e2"))
+                p.drawText(
+                    QRectF(16, 12, self.width() - 32, 52),
+                    Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignTop,
+                    self.feedback_hint,
+                )
         p.end()

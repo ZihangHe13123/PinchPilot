@@ -16,6 +16,12 @@ def parser() -> argparse.ArgumentParser:
     gui = sub.add_parser("gui", help="打开桌面界面（默认仅预览）")
     gui.add_argument("--workspace", type=Path, default=Path.cwd())
     gui.add_argument("--demo", action="store_true", help="合成动作演示，不接相机、不控制系统")
+    gui.add_argument(
+        "--interaction",
+        choices=("pinch", "finger-flex", "finger-dwell"),
+        default="pinch",
+        help="捏合主方案 / 单指轻弯 / 单指停留（单指仅应用内）",
+    )
     gui.add_argument("--smoke-seconds", type=float, help="在指定秒数后关闭，用于界面检查")
     gui.add_argument("--screenshot", type=Path, help="保存本程序窗口的截图")
     doctor = sub.add_parser("doctor", help="检查运行环境；不打开摄像头")
@@ -90,7 +96,9 @@ def main(argv=None) -> int:
         if args.command == "gui":
             from .app import run_gui
 
-            return run_gui(args.workspace, args.demo, args.smoke_seconds, args.screenshot)
+            return run_gui(
+                args.workspace, args.demo, args.smoke_seconds, args.screenshot, args.interaction
+            )
         if args.command == "doctor":
             result = environment_report()
             if args.output:

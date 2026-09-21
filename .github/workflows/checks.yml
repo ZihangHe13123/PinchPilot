@@ -25,4 +25,5 @@ jobs:
       - run: uv run ruff format --check src tests scripts
       - run: uv run pytest -q
       - run: uv run pinchpilot gui --demo --smoke-seconds 2
+      - run: uv run python scripts/check_single_finger.py
       - run: uv build

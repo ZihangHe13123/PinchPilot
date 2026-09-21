@@ -42,6 +42,10 @@ class EngineResult:
     events: list[InputEvent] = field(default_factory=list)
     prediction: Prediction | None = None
     pinch: float | None = None
+    progress: float | None = None
+    hint: str = ""
+    mode: str = "pinch"
+    bend: float | None = None
 
 
 @dataclass

@@ -26,11 +26,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .demo import demo_frame
+from . import __version__
+from .demo import demo_frame, finger_demo_frame
 from .domain import EngineConfig
 from .engine import GestureEngine
 from .features import extract
+from .finger_controls import FingerControls
 from .platform_io import MouseOutput, camera_permission, enable_dpi_awareness, request_camera_access
+from .single_finger import SingleFingerEngine
 from .storage import Recorder, calibrate, safe_name, save_json
 from .vision import CameraWorker, default_model_path, fetch_model
 from .widgets import CameraView, PracticeView
@@ -52,7 +55,7 @@ QPushButton:disabled { color: #617484; background: #162536; border-color: #26364
 QPushButton#primary { background: #167d78; border-color: #259a90; color: white; font-weight: 600; }
 QPushButton#live:checked { background: #a45531; border-color: #db8753; color: white; }
 QPushButton#stop { color: #ffb8a7; border-color: #765046; }
-QLineEdit, QComboBox, QSpinBox { background: #0d1a29; border: 1px solid #314a60;
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: #0d1a29; border: 1px solid #314a60;
                               border-radius: 5px; padding: 6px; selection-background-color: #167d78; }
 QComboBox QAbstractItemView { background: #172b3d; color: #e0ebf4; selection-background-color: #225a62; }
 QTabWidget::pane { border: 1px solid #263a4e; border-radius: 8px; }
@@ -83,7 +86,7 @@ class Job(QThread):
 class MainWindow(QMainWindow):
     camera_authorized = Signal(int, bool)
 
-    def __init__(self, workspace: Path, demo: bool = False):
+    def __init__(self, workspace: Path, demo: bool = False, interaction: str = "pinch"):
         super().__init__()
         self.workspace = workspace.resolve()
         self.record_dir = self.workspace / "data" / "recordings"
@@ -97,6 +100,7 @@ class MainWindow(QMainWindow):
                 reanchor_on_open=True,
             )
         )
+        self.finger_engine = SingleFingerEngine()
         self.worker = None
         self.stopping_workers = []
         self.jobs = set()
@@ -129,6 +133,10 @@ class MainWindow(QMainWindow):
         self.set_notice(
             "先预览，再启用。张开手定位，拇指与食指捏合点击；捏住移动拖拽，V 手势上下移动滚动。"
         )
+        index = self.interaction_choice.findData(interaction)
+        if index < 0:
+            raise ValueError("未知交互模式")
+        self.interaction_choice.setCurrentIndex(index)
         if demo:
             self.start_demo()
 
@@ -142,7 +150,7 @@ class MainWindow(QMainWindow):
         names = QVBoxLayout()
         title = QLabel("PinchPilot")
         title.setObjectName("title")
-        subtitle = QLabel("指向 · 捏合 · 拖动     /     摄像头交互研究原型")
+        subtitle = QLabel("小幅定位 · 主动点击 · 停留点击     /     摄像头交互研究原型")
         subtitle.setObjectName("subtitle")
         names.addWidget(title)
         names.addWidget(subtitle)
@@ -171,6 +179,7 @@ class MainWindow(QMainWindow):
         self.task_method = QComboBox()
         self.task_method.addItem("手势 · 应用内", True)
         self.task_method.addItem("鼠标 / 触控板", False)
+        self.task_method.currentIndexChanged.connect(self._update_task_options)
         starttask = QPushButton("开始 8 个目标")
         starttask.clicked.connect(self.start_practice)
         endtask = QPushButton("结束")
@@ -203,6 +212,12 @@ class MainWindow(QMainWindow):
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(14)
         controls, layout = self._group("01  输入与控制")
+        self.interaction_choice = QComboBox()
+        self.interaction_choice.addItem("捏合 · 当前主方案", "pinch")
+        self.interaction_choice.addItem("单指 · 轻弯点击 Demo", "finger-flex")
+        self.interaction_choice.addItem("单指 · 停留点击 Demo", "finger-dwell")
+        self.interaction_choice.currentIndexChanged.connect(self._change_interaction)
+        layout.addWidget(self.interaction_choice)
         row = QHBoxLayout()
         row.addWidget(QLabel("相机编号"))
         self.camera_index = QSpinBox()
@@ -251,15 +266,23 @@ class MainWindow(QMainWindow):
         motion_tip.setWordWrap(True)
         motion_tip.setObjectName("subtitle")
         layout.addWidget(motion_tip)
+        self.pinch_controls = (self.stable_check, self.motion_range, self.clutch_check, motion_tip)
+        self.finger_controls = FingerControls()
+        self.finger_controls.changed.connect(self._change_finger_settings)
+        self.finger_controls.recenter.connect(self._recenter_finger)
+        self.finger_controls.hide()
+        layout.addWidget(self.finger_controls)
         helptext = QLabel(
             "首次启动可能请求相机权限。真实控制仅作用于主屏；录制与校准时自动回到预览。"
         )
         helptext.setWordWrap(True)
         helptext.setObjectName("subtitle")
         layout.addWidget(helptext)
+        self.input_help = helptext
         side.addWidget(controls)
 
         capture, layout = self._group("02  采集与个人校准")
+        self.capture_group = capture
         form = QFormLayout()
         self.participant = QLineEdit("P01")
         self.session = QLineEdit(self._session_name())
@@ -311,6 +334,7 @@ class MainWindow(QMainWindow):
         side.addWidget(capture)
 
         models, layout = self._group("03  模型与分组评测")
+        self.models_group = models
         self.recognizer = QComboBox()
         self.recognizer.addItems(["规则基线", "已加载的 ML 模型"])
         self.recognizer.currentIndexChanged.connect(self._change_recognizer)
@@ -346,6 +370,99 @@ class MainWindow(QMainWindow):
         body.addWidget(scroll)
         outer.addLayout(body, 1)
         self.setCentralWidget(root)
+
+    @property
+    def interaction_mode(self):
+        return self.interaction_choice.currentData()
+
+    @property
+    def active_engine(self):
+        return self.engine if self.interaction_mode == "pinch" else self.finger_engine
+
+    @property
+    def recognizer_name(self):
+        return (
+            self.recognizer.currentText() if self.interaction_mode == "pinch" else "单指规则 Demo"
+        )
+
+    def _refresh_interaction_controls(self):
+        single = self.interaction_mode != "pinch"
+        self.live_button.setEnabled(not single and self.source != "synthetic_demo")
+        self.live_button.setText("单指 Demo · 仅应用内" if single else "启用系统鼠标控制")
+        for widget in self.pinch_controls:
+            widget.setVisible(not single)
+        self.finger_controls.setVisible(single)
+        if single:
+            self.finger_controls.select_mode(self.interaction_mode)
+        self.models_group.setEnabled(not single)
+        self.capture_group.setTitle(
+            "02  实验标识 · 单指暂不采集训练数据" if single else "02  采集与个人校准"
+        )
+        self.input_help.setText(
+            "进入「点击与拖拽实验」开始点击任务。两种单指模式均不支持拖拽或滚动。"
+            if single
+            else "首次启动可能请求相机权限。真实控制仅作用于主屏；录制与校准时自动回到预览。"
+        )
+        available = not single and not (self.recorder or self.countdown)
+        for widget in (
+            self.label_choice,
+            self.record_seconds,
+            self.calibrate_button,
+            self.load_profile_button,
+            self.reset_profile_button,
+        ):
+            widget.setEnabled(available)
+        self.record_button.setEnabled(not single)
+        self._update_task_options()
+
+    def _update_task_options(self, _=None):
+        allow_drag = self.interaction_mode == "pinch" or not self.task_method.currentData()
+        self.task_choice.model().item(1).setEnabled(allow_drag)
+        if not allow_drag:
+            self.task_choice.setCurrentIndex(0)
+
+    def _change_interaction(self, _=None):
+        self._disable_live()
+        self.finish_recording()
+        self.practice.stop()
+        if self.interaction_mode != "pinch":
+            self.finger_engine = SingleFingerEngine(
+                self.finger_controls.configuration(self.interaction_mode)
+            )
+        self.pause_button.setChecked(False)
+        self.active_engine.set_enabled(True)
+        self.demo_started = time.monotonic()
+        self._refresh_interaction_controls()
+        self.camera_view.box = self.active_engine.active_box
+        self.camera_view.set_frame(None, None, None)
+        self._dispatch(self.active_engine.reset())
+        self.set_notice(
+            "已切换到"
+            + self.interaction_choice.currentText()
+            + "。单指请先支撑前臂，进入点击实验并开始 8 个目标；其余手指可自然放松。"
+            if self.interaction_mode != "pinch"
+            else "已恢复捏合主方案。先张开手定位，再捏合点击。"
+        )
+
+    def _change_finger_settings(self):
+        if self.interaction_mode == "pinch":
+            return
+        pointer = self.finger_engine.pointer
+        self._disable_live()
+        self.practice.stop()
+        self.finger_engine = SingleFingerEngine(
+            self.finger_controls.configuration(self.interaction_mode)
+        )
+        self.finger_engine.pointer = pointer
+        self.finger_engine.set_enabled(not self.pause_button.isChecked())
+        self._dispatch(self.finger_engine.reset())
+        self.set_notice("单指参数已更新，本轮任务已结束。舒展食指重新定位后再开始一轮。")
+
+    def _recenter_finger(self):
+        self._dispatch(self.finger_engine.reset())
+        if self.practice.active:
+            self.practice.stop()
+        self.set_notice("指针留在原位。将手放到舒服的位置，舒展食指保持片刻；随后开始新一轮。")
 
     @staticmethod
     def _group(title):
@@ -423,7 +540,12 @@ class MainWindow(QMainWindow):
         self.worker.start()
         self.source = "camera"
         self.last_packet_at = 0.0
-        self.set_notice(camera_permission() + "。先张开手进入定位，再尝试捏合。")
+        hint = (
+            "先张开手进入定位，再尝试捏合。"
+            if self.interaction_mode == "pinch"
+            else ("先支撑前臂，让手部保持可见；舒展食指片刻定位，再进入应用内点击实验。")
+        )
+        self.set_notice(camera_permission() + "。" + hint)
 
     def start_demo(self):
         self.stop_all()
@@ -447,11 +569,19 @@ class MainWindow(QMainWindow):
         self.live_button.setText("启用系统鼠标控制")
         self.chip.setText("预览模式 · 系统光标不受控")
         self.engine.reset()
+        self.finger_engine.reset()
         self.practice.cancel_press()
+        if self.interaction_mode != "pinch":
+            self.live_button.setText("单指 Demo · 仅应用内")
+            self.chip.setText("单指 Demo · 应用内练习")
 
     def _toggle_live(self, checked):
         if not checked:
             self._disable_live()
+            return
+        if self.interaction_mode != "pinch":
+            self._disable_live()
+            self.set_notice("单指 Demo 仅用于应用内点击练习，暂不接管系统鼠标。")
             return
         if self.source != "camera" or self.recorder or self.countdown or self.training_busy:
             self._disable_live()
@@ -474,14 +604,14 @@ class MainWindow(QMainWindow):
             self.set_notice(str(e))
 
     def _pause(self, checked):
-        result = self.engine.set_enabled(not checked)
+        result = self.active_engine.set_enabled(not checked)
         self._dispatch(result)
         self.pause_button.setText("恢复手势预览" if checked else "暂停手势 · 可用 Esc 停止控制")
 
     def _emergency(self):
         self._disable_live()
         self.pause_button.setChecked(True)
-        self.set_notice("已停止系统控制并暂停识别。恢复后先张开手。")
+        self.set_notice("已停止系统控制并暂停识别。恢复后先舒展手指重新定位。")
 
     def _change_stability(self, enabled):
         self._disable_live()
@@ -534,11 +664,17 @@ class MainWindow(QMainWindow):
         self.current_frame = None
         self.camera_view.set_frame(None, None, None)
         self.metrics.setText("相机未启动    /    等待张开手")
-        self.live_button.setEnabled(True)
+        self.live_button.setEnabled(self.interaction_mode == "pinch")
         self.pause_button.setChecked(False)
         self.engine.set_enabled(True)
+        self.finger_engine.set_enabled(True)
+        self._dispatch(self.active_engine.reset())
 
     def _dispatch(self, result):
+        if self.output and (self.interaction_mode != "pinch" or result.mode != "pinch"):
+            self._disable_live()
+            self.set_notice("单指事件已阻止发送到系统鼠标。请在应用内练习。")
+            return
         self.practice.feed(result)
         for event in result.events:
             if event.kind != "move":
@@ -547,11 +683,15 @@ class MainWindow(QMainWindow):
                     json.dumps(
                         {
                             "timestamp": time.monotonic(),
+                            "app_version": __version__,
                             "source": self.source,
                             "output": "os" if self.output else "preview",
-                            "recognizer": self.recognizer.currentText(),
-                            "stabilise": self.engine.config.stabilise,
-                            "config": asdict(self.engine.config),
+                            "recognizer": self.recognizer_name,
+                            "interaction_mode": self.interaction_mode,
+                            "stabilise": self.engine.config.stabilise
+                            if result.mode == "pinch"
+                            else True,
+                            "config": asdict(self.active_engine.config),
                             "event": asdict(event),
                         }
                     )
@@ -582,21 +722,25 @@ class MainWindow(QMainWindow):
             self.stop_all()
             self.set_notice(failure + " " + camera_permission())
         if self.source == "synthetic_demo":
-            frame = demo_frame(now, now - self.demo_started)
+            frame = (
+                demo_frame(now, now - self.demo_started)
+                if self.interaction_mode == "pinch"
+                else finger_demo_frame(now, now - self.demo_started, self.interaction_mode)
+            )
             rgb, inference, fps = None, 0.0, 50.0
         elif packet:
             if now - packet.captured_at > 0.25:
-                self._dispatch(self.engine.tick(now))
+                self._dispatch(self.active_engine.tick(now))
                 self.set_notice("相机结果过期，已丢弃；不会重放积压鼠标动作。")
                 return
             frame, rgb, inference, fps = packet.frame, packet.rgb, packet.inference_ms, packet.fps
             self.last_packet_at = now
         else:
-            self._dispatch(self.engine.tick(now))
+            self._dispatch(self.active_engine.tick(now))
             self._record_tick(now)
             return
         self.current_frame = frame
-        features = extract(frame)
+        features = extract(frame) if self.interaction_mode == "pinch" else None
         prediction = None
         if self.recognizer.currentIndex() and self.predictor and features:
             try:
@@ -606,15 +750,23 @@ class MainWindow(QMainWindow):
                 self.recognizer.setCurrentIndex(0)
                 self.set_notice(f"模型推理失败，已停止控制：{e}")
                 return
-        result = self.engine.process(frame, prediction)
+        result = (
+            self.engine.process(frame, prediction)
+            if self.interaction_mode == "pinch"
+            else self.finger_engine.process(frame)
+        )
         self._dispatch(result)
-        self.camera_view.box = self.engine.active_box
+        self.camera_view.box = self.active_engine.active_box
         self.camera_view.set_frame(rgb, frame, result, self.source == "synthetic_demo")
         ratio = f"{result.pinch:.3f}" if result.pinch is not None else "—"
         predicted = result.prediction.label if result.prediction else "未检测到手"
+        detail = f"{result.state}    ·    {predicted}    ·    捏合比 {ratio}"
+        if self.interaction_mode != "pinch":
+            bend = f"{result.bend:.2f}" if result.bend is not None else "—"
+            detail = f"{result.hint}\n{result.state}    ·    屈曲量（几何代理） {bend}"
         self.metrics.setText(
-            f"{result.state}    ·    {predicted}    ·    捏合比 {ratio}\n"
-            f"{fps:.1f} FPS    /    手部推理 {inference:.1f} ms    /    事件 {self.event_count}"
+            detail
+            + f"\n{fps:.1f} FPS    /    手部推理 {inference:.1f} ms    /    事件 {self.event_count}"
         )
         self._record_tick(now)
         if self.recorder and self.source == "camera":
@@ -636,11 +788,17 @@ class MainWindow(QMainWindow):
             self.reset_profile_button,
             self.motion_range,
             self.clutch_check,
+            self.interaction_choice,
+            self.finger_controls,
         ):
             widget.setEnabled(enabled)
         self.train_button.setEnabled(enabled and not self.training_busy)
+        self._refresh_interaction_controls()
 
     def start_recording(self):
+        if self.interaction_mode != "pinch":
+            self.set_notice("单指 Demo 的动作不能录入捏合四分类数据。点击任务结果会单独保存。")
+            return
         if self.training_busy:
             self.set_notice("请先等待训练结束，避免录制文件在训练读取时发生变化。")
             return
@@ -814,18 +972,27 @@ class MainWindow(QMainWindow):
         if virtual and self.source == "none":
             self.set_notice("手势任务需要先启动相机或演示。")
             return
+        if (
+            virtual
+            and self.interaction_mode != "pinch"
+            and self.task_choice.currentData() != "click"
+        ):
+            self.set_notice("单指 Demo 当前只支持点击目标。")
+            return
         if virtual:
-            self.engine.pointer = (0.5, 0.5)
-            self.engine.reset()
+            self.active_engine.pointer = (0.5, 0.5)
+            self.active_engine.reset()
         self.practice.start(
             self.report_dir / "tasks",
             {
                 "participant": self.participant.text(),
+                "app_version": __version__,
                 "session": self.session.text(),
                 "source": self.source if virtual else "physical_mouse_or_trackpad",
-                "recognizer": self.recognizer.currentText(),
-                "config": asdict(self.engine.config),
-                "initial_pointer": self.engine.pointer if virtual else None,
+                "recognizer": self.recognizer_name,
+                "interaction_mode": self.interaction_mode if virtual else "physical",
+                "config": asdict(self.active_engine.config),
+                "initial_pointer": self.active_engine.pointer if virtual else None,
             },
             virtual,
             self.task_choice.currentData(),
@@ -852,13 +1019,17 @@ class MainWindow(QMainWindow):
 
 
 def run_gui(
-    workspace: Path, demo=False, smoke_seconds: float | None = None, screenshot: Path | None = None
+    workspace: Path,
+    demo=False,
+    smoke_seconds: float | None = None,
+    screenshot: Path | None = None,
+    interaction: str = "pinch",
 ):
     enable_dpi_awareness()
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("PinchPilot")
     app.setOrganizationName("PinchPilot Research")
-    window = MainWindow(workspace, demo)
+    window = MainWindow(workspace, demo, interaction)
     available = app.primaryScreen().availableGeometry()
     window.resize(min(1240, available.width() - 40), min(820, available.height() - 40))
     window.show()
