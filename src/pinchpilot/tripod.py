@@ -1,4 +1,4 @@
-"""Thumb-middle grip points; index approaches the pair to click, once per tap."""
+"""Thumb-middle grip points; thumb-index contact clicks, including while frozen."""
 
 import math
 from dataclasses import dataclass, replace
@@ -38,7 +38,7 @@ class TripodConfig:
         if not 0.1 <= self.grip_engage < self.grip_release <= 0.8:
             raise ValueError("拇中捏合阈值无效")
         if not 0.08 <= self.touch_ratio < self.hover_ratio < self.clear_ratio <= 1:
-            raise ValueError("食指触碰阈值无效")
+            raise ValueError("食拇触碰阈值无效")
         if not 0.06 <= self.arm_seconds <= 0.5 or not 0.03 <= self.confirm_seconds <= 0.2:
             raise ValueError("三指确认时长无效")
         if not 0.1 <= self.tracking_timeout <= 0.5 or not 0.04 <= self.max_jump <= 0.3:
@@ -48,6 +48,7 @@ class TripodConfig:
 @dataclass(frozen=True)
 class TripodFeatures:
     point: tuple[float, float]
+    palm: tuple[float, float]
     scale: float
     grip: float
     contact: float
@@ -66,10 +67,16 @@ def tripod_features(frame: HandFrame) -> TripodFeatures | None:
     if scale < 0.025:
         return None
     grip = float(np.linalg.norm(xyz[4] - xyz[12]) / scale)
-    # Require proximity to BOTH tips, including estimated depth. This is a
-    # landmark-distance proxy, not a physical contact/pressure sensor.
-    contact = float(max(np.linalg.norm(xyz[8] - xyz[4]), np.linalg.norm(xyz[8] - xyz[12])) / scale)
-    return TripodFeatures(tuple((p[4, :2] + p[12, :2]) / 2), scale, grip, contact)
+    # Middle finger gates movement only. Contact is a thumb-index distance
+    # proxy with estimated depth, not a physical contact/pressure sensor.
+    contact = float(np.linalg.norm(xyz[8] - xyz[4]) / scale)
+    return TripodFeatures(
+        tuple((p[4, :2] + p[12, :2]) / 2),
+        tuple(p[[0, 5, 9, 13, 17], :2].mean(axis=0)),
+        scale,
+        grip,
+        contact,
+    )
 
 
 class TripodEngine:
@@ -88,6 +95,7 @@ class TripodEngine:
         self.camera_anchor = None
         self.pointer_anchor = self.pointer or (0.5, 0.5)
         self.raw_pointer = None
+        self.motion_engaged = False
         self.arm_since = self.touch_since = self.clear_since = None
         self.stabilizer = None
         return self._result()
@@ -114,9 +122,15 @@ class TripodEngine:
     def _result(self, events=None, hint=None):
         hints = {
             "WAIT_GRIP": "拇指与中指捏住，食指移开，接管指针",
-            "CONTROL": "移动捏合点定位 · 食指碰入点击 · 松开拇中即休息",
-            "APPROACH": "食指接近 · 指针已冻结 · 再靠近一点点击",
-            "TOUCHED": "已点击 · 食指移开后继续定位",
+            "CONTROL": "移动拇中捏合点定位 · 食拇相碰点击 · 松中指可锁住位置",
+            "FROZEN": "位置已锁住 · 食指碰拇指仍可点击 · 移开食指后捏住中指继续移动",
+            "APPROACH": "食指接近拇指 · 指针已冻结 · 再靠近一点点击",
+            "TOUCHED": (
+                "已点击 · 食指离开拇指后继续定位"
+                if self.motion_engaged
+                else "已点击 · 位置保持锁住 · 食指离开拇指后可再点"
+            ),
+            "WAIT_CLEAR": "位置已锁住 · 请先分开食指和拇指，再捏合点击",
             "PAUSED": "已暂停 · 恢复后重新捏住拇中",
         }
         f = self.features
@@ -161,7 +175,12 @@ class TripodEngine:
             return self.reset()
         if self.features is not None and (
             (self.last_hand and frame.handedness and self.last_hand != frame.handedness)
-            or math.dist(f.point, self.features.point) > self.config.max_jump
+            or math.dist(f.palm, self.features.palm) > self.config.max_jump
+            or (
+                self.motion_engaged
+                and f.grip <= self.config.grip_release
+                and math.dist(f.point, self.features.point) > self.config.max_jump
+            )
         ):
             return self._disarm(f, frame, "追踪发生跳变 · 暂停移动，请移开食指重新捏住")
         self.last_time = self.last_seen = t
@@ -176,19 +195,47 @@ class TripodEngine:
             if t - self.arm_since < cfg.arm_seconds:
                 return self._result(hint="正在接管 · 保持拇中捏合，食指在外侧")
             self._anchor(f, t)
+            self.motion_engaged = True
             self.state = "CONTROL"
             return self._result([InputEvent("move", *self.pointer)])
-        if f.grip > cfg.grip_release:
-            return self._disarm(f, frame, "拇中已松开 · 指针停住，再捏合可继续")
-        self.raw_pointer = tuple(
-            a + (v - c) / cfg.span
-            for a, v, c in zip(self.pointer_anchor, f.point, self.camera_anchor)
-        )
-        if self.state == "CONTROL":
+        if self.motion_engaged and f.grip > cfg.grip_release:
+            # Releasing the middle finger freezes before any midpoint update.
+            # Do not turn a contact that started during this transition into a
+            # click, or rearm a contact that has already clicked.
+            self.motion_engaged = False
+            self.raw_pointer = None
+            self.arm_since = self.touch_since = self.clear_since = None
+            if self.state != "TOUCHED":
+                self.state = "FROZEN" if f.contact >= cfg.clear_ratio else "WAIT_CLEAR"
+            return self._result()
+        if not self.motion_engaged:
+            if (
+                self.state == "FROZEN"
+                and f.grip <= cfg.grip_engage
+                and f.contact >= cfg.clear_ratio
+            ):
+                if self.arm_since is None:
+                    self.arm_since = t
+                if t - self.arm_since >= cfg.arm_seconds:
+                    self._anchor(f, t)
+                    self.motion_engaged = True
+                    self.state = "CONTROL"
+                    self.arm_since = None
+                    return self._result([InputEvent("move", *self.pointer)])
+            else:
+                self.arm_since = None
+        else:
+            self.raw_pointer = tuple(
+                a + (v - c) / cfg.span
+                for a, v, c in zip(self.pointer_anchor, f.point, self.camera_anchor)
+            )
+        if self.state in ("CONTROL", "FROZEN"):
             if f.contact > cfg.hover_ratio:
-                point = self.stabilizer.update(self.raw_pointer, t)
-                self.pointer = tuple(min(1.0, max(0.0, v)) for v in point)
-                return self._result([InputEvent("move", *self.pointer)])
+                if self.motion_engaged:
+                    point = self.stabilizer.update(self.raw_pointer, t)
+                    self.pointer = tuple(min(1.0, max(0.0, v)) for v in point)
+                    return self._result([InputEvent("move", *self.pointer)])
+                return self._result()
             # Freeze the previous pointer before this frame's contacting hand can
             # move it. Index coordinates NEVER enter the pointing calculation.
             self.state = "APPROACH"
@@ -198,10 +245,12 @@ class TripodEngine:
             if self.clear_since is None:
                 self.clear_since = t
             if t - self.clear_since >= cfg.confirm_seconds:
-                self._anchor(f, t)
-                self.state = "CONTROL"
                 self.clear_since = None
-                return self._result([InputEvent("move", *self.pointer)])
+                if self.motion_engaged:
+                    self._anchor(f, t)
+                    self.state = "CONTROL"
+                    return self._result([InputEvent("move", *self.pointer)])
+                self.state = "FROZEN"
             return self._result()
         self.clear_since = None
         if self.state == "APPROACH":

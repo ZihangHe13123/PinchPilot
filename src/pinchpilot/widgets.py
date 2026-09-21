@@ -113,7 +113,7 @@ class CameraView(QWidget):
                 middle = (points[4] + points[12]) / 2
                 p.drawLine(points[4], points[12])
                 p.setPen(QPen(QColor("#ffce83"), 2, Qt.PenStyle.DashLine))
-                p.drawLine(points[8], middle)
+                p.drawLine(points[8], points[4])
                 p.setPen(QPen(QColor("#9eaebd"), 1))
                 p.drawEllipse(middle, 5, 5)
             elif self.result and self.result.mode != "pinch":

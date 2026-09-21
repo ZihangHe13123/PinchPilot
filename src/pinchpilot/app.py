@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         names = QVBoxLayout()
         title = QLabel("PinchPilot")
         title.setObjectName("title")
-        subtitle = QLabel("稳定定位 · 三指主动点击     /     摄像头交互研究原型")
+        subtitle = QLabel("稳定定位 · 食拇主动点击     /     摄像头交互研究原型")
         subtitle.setObjectName("subtitle")
         names.addWidget(title)
         names.addWidget(subtitle)
@@ -220,7 +220,7 @@ class MainWindow(QMainWindow):
         controls, layout = self._group("01  输入与控制")
         self.interaction_choice = QComboBox()
         self.interaction_choice.addItem("捏合 · 当前主方案", "pinch")
-        self.interaction_choice.addItem("三指 · 捏住定位＋食指点击", "tripod")
+        self.interaction_choice.addItem("三指 · 拇中定位＋食拇点击", "tripod")
         self.interaction_choice.addItem("单指 · 轻弯（暂搁置）", "finger-flex")
         self.interaction_choice.addItem("单指 · 停留（暂搁置）", "finger-dwell")
         self.interaction_choice.currentIndexChanged.connect(self._change_interaction)
@@ -629,7 +629,10 @@ class MainWindow(QMainWindow):
             else ("先支撑前臂，让手部保持可见；舒展食指片刻定位，再进入应用内点击实验。")
         )
         if self.interaction_mode == "tripod":
-            hint = "支撑前臂，拇指与中指捏住接管；食指碰入点一次，移开再点。可先记录静止抖动。"
+            hint = (
+                "支撑前臂，拇中捏住接管；食指碰拇指点一次，分开再点。"
+                "松中指锁住位置后仍可点击，Esc 暂停。"
+            )
         self.set_notice(camera_permission() + "。" + hint)
 
     def start_demo(self):
@@ -863,7 +866,7 @@ class MainWindow(QMainWindow):
         if self.interaction_mode == "tripod":
             grip = f"{result.grip:.2f}" if result.grip is not None else "—"
             contact = f"{result.contact:.2f}" if result.contact is not None else "—"
-            detail = f"{result.hint}\n拇中间距 {grip}    ·    食指间距 {contact}"
+            detail = f"{result.hint}\n拇中间距 {grip}    ·    食拇间距 {contact}"
         elif self.interaction_mode != "pinch":
             bend = f"{result.bend:.2f}" if result.bend is not None else "—"
             detail = f"{result.hint}\n{result.state}    ·    屈曲量（几何代理） {bend}"

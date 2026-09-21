@@ -63,17 +63,20 @@ def test_tripod_settings_stop_trial_and_preserve_pinch_preferences(window):
     assert window.active_engine is window.engine and window.tripod_controls.isHidden()
 
 
-def test_tripod_engine_to_eight_targets_and_logging(window):
+@pytest.mark.parametrize("frozen_click", [False, True])
+def test_tripod_engine_to_eight_targets_and_logging(window, frozen_click):
     window.practice.resize(800, 500)
     window.start_practice()
     engine = window.tripod_engine
     timestamp = 100.0
 
-    def frames(n, x=0.5, y=0.38, contact=0.85):
+    def frames(n, x=0.5, y=0.38, contact=0.85, grip=True):
         nonlocal timestamp
         for _ in range(n):
             timestamp += 1 / 30
-            window._dispatch(engine.process(synthetic_tripod(timestamp, x, y, contact=contact)))
+            window._dispatch(
+                engine.process(synthetic_tripod(timestamp, x, y, grip=grip, contact=contact))
+            )
 
     frames(10)
     current = np.array([0.5, 0.38])
@@ -85,15 +88,19 @@ def test_tripod_engine_to_eight_targets_and_logging(window):
         for value in np.linspace(current, point, 20):
             frames(1, *value)
         frames(15, *point)
-        frames(3, *(point + 0.002), contact=0.32)
-        frames(4, *(point + 0.004), contact=0.10)
-        frames(5, *point)
+        if frozen_click:
+            frames(5, *point, grip=False)
+            assert engine.state == "FROZEN"
+        frames(3, *(point + 0.002), contact=0.32, grip=not frozen_click)
+        frames(4, *(point + 0.004), contact=0.10, grip=not frozen_click)
+        frames(12, *point)
         current = point
     assert window.practice.index == 8 and window.practice.misses == 0
     assert not window.practice.active
     rows = [json.loads(line) for line in window.practice.path.read_text().splitlines()]
     assert rows[0]["interaction_mode"] == "tripod" and rows[0]["source"] == "synthetic_demo"
     assert rows[0]["config"]["deadband"] == 0.008
+    assert rows[0]["app_version"] == app_module.__version__
 
 
 def test_probe_rejects_demo_and_cancels_on_mode_change(window):
@@ -127,13 +134,15 @@ def test_probe_only_counts_fresh_observed_control_and_reports_spread():
     assert report["output"]["rms_radius"] == 0
 
 
-@pytest.mark.parametrize("condition", ["frozen", "edge", "stalled", "cancelled"])
+@pytest.mark.parametrize(
+    "condition", ["TOUCHED", "FROZEN", "WAIT_CLEAR", "edge", "stalled", "cancelled"]
+)
 def test_probe_rejects_misleading_zero_jitter_conditions(condition):
     probe = StabilityProbe(100, {})
     step = 0.4 if condition == "stalled" else 1 / 30
     for timestamp in np.arange(100, 108, step):
         result = probe_result(
-            state="TOUCHED" if condition == "frozen" else "CONTROL",
+            state=condition if condition in ("TOUCHED", "FROZEN", "WAIT_CLEAR") else "CONTROL",
             raw=(1.2, 0.5) if condition == "edge" else (0.5, 0.5),
         )
         probe.add(float(timestamp), result)

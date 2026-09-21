@@ -16,7 +16,7 @@ def synthetic_tripod(timestamp, x=0.5, y=0.38, grip=True, contact=0.85, noise=(0
     gap = (0.10 if grip else 0.75) * scale / base.aspect
     for tip, sign in ((4, -1), (12, 1)):
         p[tip] = (x + sign * gap / 2 + noise[0], y + noise[1], 0)
-    p[8] = (x + noise[0], y - contact * scale + noise[1], 0)
+    p[8] = (p[4, 0], y - contact * scale + noise[1], 0)
     for previous, tip in ((3, 4), (7, 8), (11, 12)):
         p[previous] = (p[previous - 1] + p[tip]) / 2
     return HandFrame(timestamp, tuple(map(tuple, p)), base.aspect, "Right", 0.99)
@@ -32,4 +32,7 @@ def tripod_demo_frame(timestamp, elapsed):
     if 2.9 < phase <= 3.2 or 6.0 < phase <= 6.2:
         contact = 0.32
     noise = (0.0007 * math.sin(elapsed * 36), 0.0007 * math.cos(elapsed * 42))
-    return synthetic_tripod(timestamp, x, y, contact=contact, noise=noise)
+    # The second click demonstrates the frozen-pointer fallback with middle up.
+    return synthetic_tripod(
+        timestamp, x, y, grip=not 5.6 < phase < 7.2, contact=contact, noise=noise
+    )

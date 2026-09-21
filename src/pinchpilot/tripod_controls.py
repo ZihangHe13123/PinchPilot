@@ -38,7 +38,7 @@ class TripodControls(QWidget):
             self.contact.addItem(label, value)
         form.addRow("定位范围", self.span)
         form.addRow("抗抖强度", self.stability)
-        form.addRow("食指接触", self.contact)
+        form.addRow("食拇接触", self.contact)
         layout.addLayout(form)
         reset = QPushButton("重新定位 · 保留指针")
         reset.clicked.connect(self.recenter.emit)
@@ -47,8 +47,8 @@ class TripodControls(QWidget):
         self.probe_button.clicked.connect(self.probe.emit)
         layout.addWidget(self.probe_button)
         hint = QLabel(
-            "拇指＋中指捏住后移动；食指碰入点一次，移开再点。松开拇中休息。"
-            "先支撑前臂，确保三指可见。静止记录前会留 2 秒准备。"
+            "拇中捏住后移动；食指碰拇指点一次，分开再点。松中指锁住位置，仍可点击。"
+            "先移开食指，再捏中指继续移动；Esc 暂停。前臂尽量有支撑。静止记录前留 2 秒准备。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("subtitle")

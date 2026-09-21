@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PySide6.QtWidgets import QApplication
 
+from pinchpilot import __version__
 from pinchpilot.app import MainWindow
 from pinchpilot.stability_probe import StabilityProbe
 from pinchpilot.tripod import TripodEngine
@@ -17,7 +18,10 @@ from pinchpilot.tripod_demo import synthetic_tripod
 
 def noise_check(kind):
     engine = TripodEngine()
-    probe = StabilityProbe(101, {"source": "synthetic_engineering", "noise_profile": kind})
+    probe = StabilityProbe(
+        101,
+        {"source": "synthetic_engineering", "noise_profile": kind, "app_version": __version__},
+    )
     rng = np.random.default_rng(42)
     for i in range(300):
         timestamp = 100 + i / 30
@@ -33,22 +37,20 @@ def noise_check(kind):
     return report
 
 
-def main():
-    application = QApplication.instance() or QApplication([])
-    directory = Path("reports/verification/tripod").resolve()
-    directory.mkdir(parents=True, exist_ok=True)
-    window = MainWindow(directory / "task-workspace", demo=True, interaction="tripod")
+def target_check(application, directory, frozen_click):
+    variant = "middle-released" if frozen_click else "middle-held"
+    window = MainWindow(directory / f"{variant}-workspace", demo=True, interaction="tripod")
     window.timer.stop()
     window.resize(1240, 860)
     window.show()
     engine = window.tripod_engine
     timestamp = 100.0
 
-    def frames(n, point=(0.5, 0.38), contact=0.85):
+    def frames(n, point=(0.5, 0.38), contact=0.85, grip=True):
         nonlocal timestamp
         for _ in range(n):
             timestamp += 1 / 30
-            frame = synthetic_tripod(timestamp, *point, contact=contact)
+            frame = synthetic_tripod(timestamp, *point, grip=grip, contact=contact)
             result = engine.process(frame)
             window._dispatch(result)
             window.camera_view.box = engine.active_box
@@ -67,41 +69,71 @@ def main():
             for value in np.linspace(current, point, 20):
                 frames(1, value)
             frames(15, point)
-            frames(3, point + 0.002, 0.32)
+            if frozen_click:
+                frames(5, point, grip=False)
+                assert engine.state == "FROZEN"
+            else:
+                frames(3, point + 0.002, 0.32)
             if index == 0:
                 application.processEvents()
-                assert window.grab().save(str(directory / "tripod-preview.png"))
-            frames(4, point + 0.004, 0.10)
+                assert window.grab().save(str(directory / f"{variant}-preview.png"))
+            if frozen_click:
+                frames(3, point + 0.002, 0.32, grip=False)
+            frames(4, point + 0.004, 0.10, grip=not frozen_click)
             if index == 1:
                 window.tabs.setCurrentIndex(1)
                 application.processEvents()
-                assert window.grab().save(str(directory / "tripod-practice.png"))
-            frames(5, point)
+                assert window.grab().save(str(directory / f"{variant}-practice.png"))
+            frames(12, point)
             current = point
         assert window.practice.index == 8 and window.practice.misses == 0
-        summary = {
-            "source": "synthetic_engineering",
-            "camera_opened": False,
-            "os_events_sent": False,
+        return {
+            "variant": variant,
             "targets_hit": 8,
             "misses": 0,
             "task_log": str(window.practice.path),
-            "noise_profiles": {},
         }
-        for kind in ("independent", "correlated"):
-            report = noise_check(kind)
-            (directory / f"noise-{kind}.json").write_text(json.dumps(report, indent=2))
-            summary["noise_profiles"][kind] = {
-                "raw_rms": report["raw"]["rms_radius"],
-                "output_rms": report["output"]["rms_radius"],
-            }
-        summary["limits"] = (
-            "Declared synthetic noise only. No real tracking, intent, fatigue or accuracy conclusion."
-        )
-        (directory / "checks.json").write_text(json.dumps(summary, indent=2))
-        print(json.dumps(summary, indent=2))
     finally:
         window.close()
+
+
+def main():
+    application = QApplication.instance() or QApplication([])
+    directory = Path(f"reports/verification/tripod-{__version__}").resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "app_version": __version__,
+        "source": "synthetic_engineering",
+        "camera_opened": False,
+        "os_events_sent": False,
+        "tasks": [target_check(application, directory, frozen) for frozen in (False, True)],
+        "noise_profiles": {},
+    }
+    for kind in ("independent", "correlated"):
+        report = noise_check(kind)
+        encoded = json.dumps(report, indent=2)
+        (directory / f"noise-{kind}.json").write_text(encoded)
+        comparison = {
+            "raw_rms": report["raw"]["rms_radius"],
+            "output_rms": report["output"]["rms_radius"],
+        }
+        reference = Path(f"reports/verification/tripod/noise-{kind}.json")
+        if reference.exists():
+            old_rows = json.loads(reference.read_text())["rows"]
+            fields = ("timestamp", "state", "eligible", "raw", "output")
+            same = len(old_rows) == len(report["rows"]) and all(
+                all(old[key] == new[key] for key in fields)
+                for old, new in zip(old_rows, json.loads(encoded)["rows"])
+            )
+            assert same, "Continuous-control trajectory changed from the saved v0.4 reference"
+            comparison["identical_to_saved_v0_4_motion"] = same
+            comparison["compared_frames"] = len(old_rows)
+        summary["noise_profiles"][kind] = comparison
+    summary["limits"] = (
+        "Declared synthetic noise only. No real tracking, intent, fatigue or accuracy conclusion."
+    )
+    (directory / "checks.json").write_text(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":

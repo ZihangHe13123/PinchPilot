@@ -17,9 +17,13 @@ class Sequence:
 
     def frames(self, n=1, **kwargs):
         for _ in range(n):
-            self.t += 1 / 30
-            self.result = self.engine.process(synthetic_tripod(self.t, **kwargs))
-            self.events.extend(self.result.events)
+            self.frame(synthetic_tripod(self.t + 1 / 30, **kwargs))
+        return self.result
+
+    def frame(self, frame):
+        self.t = frame.timestamp
+        self.result = self.engine.process(frame)
+        self.events.extend(self.result.events)
         return self.result
 
     def clicks(self):
@@ -46,10 +50,25 @@ def test_geometry_ratios_preserved_under_translation_scale_and_aspect():
     assert (actual.grip, actual.contact) == pytest.approx((base.grip, base.contact))
 
 
+def test_click_distance_uses_thumb_only_regardless_of_middle_position():
+    frame = synthetic_tripod(1, contact=0.20)
+    before = tripod_features(frame)
+    p = list(frame.landmarks)
+    p[12] = (0.8, 0.75, -0.2)
+    after = tripod_features(replace(frame, landmarks=tuple(p)))
+    assert after.grip > 0.46
+    assert after.contact == pytest.approx(before.contact)
+    # Index touching only the middle finger must not count as thumb contact.
+    p[8] = p[12]
+    assert tripod_features(replace(frame, landmarks=tuple(p))).contact > 0.48
+
+
 def test_open_hand_or_initial_three_finger_contact_cannot_arm_or_click():
     s = Sequence()
     s.frames(20, grip=False)
     assert s.result.state == "WAIT_GRIP" and not s.result.events
+    s.frames(30, grip=False, contact=0.1)
+    assert s.result.state == "WAIT_GRIP" and not s.clicks()
     s.frames(30, contact=0.1)
     assert s.result.state == "WAIT_GRIP" and not s.clicks()
     s.frames(8)
@@ -76,16 +95,12 @@ def test_hover_freezes_before_displacement_and_contact_clicks_before_lift():
     assert len(s.clicks()) == 2
 
 
-@pytest.mark.parametrize(
-    "interruption", ["release", "missing", "gap", "swap", "jump", "pause", "badtime"]
-)
+@pytest.mark.parametrize("interruption", ["missing", "gap", "swap", "jump", "pause", "badtime"])
 def test_pending_click_cancelled_and_contact_on_return_does_not_click(interruption):
     s = Sequence()
     s.frames(10)
     s.frames(1, contact=0.1)
-    if interruption == "release":
-        s.frames(1, grip=False, contact=0.1)
-    elif interruption == "missing":
+    if interruption == "missing":
         s.engine.process(HandFrame(s.t + 0.01))
     elif interruption == "gap":
         s.t += 0.4
@@ -100,6 +115,130 @@ def test_pending_click_cancelled_and_contact_on_return_does_not_click(interrupti
         s.engine.process(synthetic_tripod(float("nan"), contact=0.1))
     s.frames(20, contact=0.1)
     assert not s.clicks() and s.result.state == "WAIT_GRIP"
+
+
+def test_release_freezes_and_thumb_index_can_click_repeatedly_at_that_location():
+    s = Sequence()
+    s.frames(10)
+    s.frames(20, x=0.53)
+    anchor = s.engine.pointer
+    release = s.frames(1, grip=False)
+    assert release.state == "FROZEN" and not release.events
+    assert release.pointer == anchor and release.raw_pointer is None
+    # Moving the visible fingertips while ungripped cannot move the cursor;
+    # there is no short timeout that silently removes the fallback.
+    for x in np.linspace(0.5, 0.8, 90):
+        result = s.frames(1, x=x, grip=False)
+        assert result.pointer == anchor and not result.events
+    s.frames(3, x=0.8, grip=False, contact=0.32)
+    assert s.result.state == "APPROACH" and not s.clicks()
+    s.frames(4, x=0.8, grip=False, contact=0.1)
+    assert s.result.state == "TOUCHED" and len(s.clicks()) == 1
+    assert all((e.x, e.y) == anchor for e in s.result.events)
+    s.frames(40, x=0.8, grip=False, contact=0.1)
+    assert len(s.clicks()) == 1
+    s.frames(5, x=0.8, grip=False)
+    assert s.result.state == "FROZEN"
+    s.frames(4, x=0.8, grip=False, contact=0.1)
+    assert len(s.clicks()) == 2
+    assert all((e.x, e.y) == anchor for e in s.clicks())
+
+
+@pytest.mark.parametrize("contact_before_release", [0.85, 0.32, 0.1])
+def test_release_with_contact_already_close_requires_clear_before_fallback(contact_before_release):
+    s = Sequence()
+    s.frames(10)
+    s.frames(1, contact=contact_before_release)
+    anchor = s.engine.pointer
+    s.frames(1, grip=False, contact=0.1)
+    assert s.result.state == "WAIT_CLEAR" and not s.result.events
+    s.frames(20, grip=False, contact=0.1)
+    assert not s.clicks() and s.engine.pointer == anchor
+    # One noisy clear frame cannot prepare a click.
+    s.frames(1, grip=False)
+    s.frames(4, grip=False, contact=0.1)
+    assert not s.clicks()
+    s.frames(5, grip=False)
+    s.frames(4, grip=False, contact=0.1)
+    assert len(s.clicks()) == 1 and s.engine.pointer == anchor
+
+
+def test_holding_thumb_index_contact_cannot_click_again_when_middle_cycles():
+    s = Sequence()
+    s.frames(10)
+    s.frames(4, contact=0.1)
+    assert len(s.clicks()) == 1
+    anchor = s.engine.pointer
+    for _ in range(3):
+        for grip in (False, True):
+            s.frames(10, grip=grip, contact=0.1)
+            assert s.result.state == "TOUCHED" and s.engine.pointer == anchor
+            assert not s.engine.motion_engaged and len(s.clicks()) == 1
+    s.frames(12)
+    assert s.result.state == "CONTROL" and s.engine.pointer == anchor
+    s.frames(4, contact=0.1)
+    assert len(s.clicks()) == 2
+
+
+def test_extending_only_middle_beyond_jump_threshold_still_allows_fallback():
+    s = Sequence()
+    s.frames(10)
+    anchor = s.engine.pointer
+    for contact in [0.85] * 5 + [0.1] * 5:
+        frame = synthetic_tripod(s.t + 1 / 30, contact=contact)
+        p = list(frame.landmarks)
+        p[12] = (0.9, 0.8, 0.1)
+        s.frame(replace(frame, landmarks=tuple(p)))
+        assert s.engine.pointer == anchor
+    assert len(s.clicks()) == 1 and s.result.state == "TOUCHED"
+
+
+@pytest.mark.parametrize(
+    "interruption", ["missing", "gap", "swap", "palm_jump", "pause", "badtime"]
+)
+def test_frozen_click_qualification_is_cancelled_by_tracking_or_pause(interruption):
+    s = Sequence()
+    s.frames(10)
+    s.frames(5, grip=False)
+    s.frames(1, grip=False, contact=0.1)
+    if interruption == "missing":
+        s.frame(HandFrame(s.t + 1 / 30))
+    elif interruption == "gap":
+        s.t += 0.4
+    elif interruption == "swap":
+        s.frame(replace(synthetic_tripod(s.t + 1 / 30, grip=False), handedness="Left"))
+    elif interruption == "palm_jump":
+        frame = synthetic_tripod(s.t + 1 / 30, grip=False)
+        p = np.array(frame.landmarks) + [0.25, 0, 0]
+        s.frame(replace(frame, landmarks=tuple(map(tuple, p))))
+    elif interruption == "pause":
+        s.engine.set_enabled(False)
+        s.engine.set_enabled(True)
+    elif interruption == "badtime":
+        s.engine.process(synthetic_tripod(s.t - 1, grip=False))
+    s.frames(20, grip=False, contact=0.1)
+    assert s.result.state == "WAIT_GRIP" and not s.clicks()
+    s.frames(20, grip=False)
+    s.frames(20, grip=False, contact=0.1)
+    assert not s.clicks()  # A fresh middle grip is required after a real interruption.
+
+
+def test_regrip_confirmation_and_anchor_preserve_frozen_location():
+    s = Sequence()
+    s.frames(10)
+    s.frames(20, x=0.53)
+    anchor = s.engine.pointer
+    s.frames(5, grip=False)
+    s.frames(2, x=0.75)
+    assert s.result.state == "FROZEN" and s.engine.pointer == anchor
+    # A broken regrip cannot reuse its earlier confirmation time.
+    s.frames(1, x=0.75, grip=False)
+    s.frames(2, x=0.75)
+    assert not s.engine.motion_engaged
+    s.frames(10, x=0.75)
+    assert s.result.state == "CONTROL" and s.engine.pointer == anchor
+    s.frames(12, x=0.78)
+    assert s.engine.pointer[0] > anchor[0] + 0.08
 
 
 def test_noise_or_brief_exit_cannot_confirm_click_or_rearm():
