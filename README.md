@@ -1,33 +1,37 @@
 # PinchPilot
 
-用普通电脑摄像头进行捏合交互的课程研究原型。研究目标是：**以尽可能少的辅助动作和尽可能小的手部活动幅度，稳定完成桌面操控**，并同时检验误操作、响应速度和主观费力度。
+用普通电脑摄像头进行捏合交互的课程研究原型。研究目标是：**以尽可能少的辅助动作和尽可能小的手部活动幅度，稳定完成桌面操控**，并检验误操作、响应速度和主观费力度。
 
-当前实现用手掌移动定位，拇指与食指捏合点击、捏住移动拖拽，V 手势上下移动滚动。前臂支撑下的可用性、动作成本计量及更小动作的自训练识别仍需验证；详见 [新目标与研究设计](docs/superpowers/specs/2026-09-21-minimal-motion-design.md)。
+**当前版本 v0.7.0 已提供可操控真实鼠标的桌面测试工具。** 沿用已获用户认可的拇中定位、食拇左键/拖拽和拇无名指右键，保留移动映射与抗抖。新增独立的轻量界面、必要测试数据、功能开关、本地记录和后台 Esc/超时松键。完整步骤见 [桌面试用说明](docs/DESKTOP_TRIAL.md)。
 
-**当前优先试用：拇中定位、食拇左键/拖拽、拇无名指右键。** 松中指可锁住位置，保留既有移动映射和抗抖。[右键与拖拽体验顺序](docs/RIGHT_CLICK_DRAG_TRIAL.md)。旧单指因用户报告严重晃动、难用已搁置；原捏合仍是默认基线。
+## 立即启动桌面测试版
 
-**当前原型版本为 v0.6.0。** 新增右键、按住拖拽、换位续拖和右键任务；左键改为接触确认时按下、松开时完成单击，避免拖拽之前多点一次。拇中定位模式支持应用内左/右键和拖拽；旧单指只支持点击，所有实验模式仍与系统输出、旧训练集隔离。已有用户对 v0.5 的定性认可，新动作与正式量化实验待验证。用户确认这轮体验后，再推进数日桌面试用版。既有静止诊断、原捏合平台接口、RF/SVM 数据和训练工具保留，尚无项目真人训练数据。
-
-试新模式：Mac 双击 **launch_tripod_mac.command**；Windows 双击 **launch_tripod_windows.cmd**。或执行 `uv run pinchpilot gui --interaction tripod`。入口只选择模式，不自动开相机。先启动摄像头，支撑前臂，拇中轻捏、食指移开；可先做 8 秒静止记录，再开始 8 目标点击。
-
-## 立即启动
-
-这台 Mac 的代码位于 `/Users/zhihang/Project/PinchPilot`，运行环境已安装。双击 **launch_mac.command**，或在项目目录执行：
+这台 Mac 的项目位于 `/Users/zhihang/Project/PinchPilot`：双击 **launch_desktop_mac.command**；Windows 双击 **launch_desktop_windows.cmd**。或在项目目录执行：
 
 ```sh
-uv run pinchpilot gui
+uv run pinchpilot desktop
 ```
 
-首次试用先点击「无相机演示」查看界面；它使用合成关键点，不会读取相机或操作系统光标。点击「启动摄像头」开始真实预览。首次启动会请求相机权限，手部模型需要联网下载一次（约 8 MB），随后缓存在本机。
+**启动相机 → 启用鼠标控制 → 食指移开、拇中轻捏接管。** 从当前系统光标位置开始。启动时相机和控制均关闭，手感设置会保留。先退出占用相机的旧 Demo；前臂支撑在桌面或扶手，让摄像头看清手和指尖。
 
-1. 前臂放在桌面或扶手上，让相机看清手掌及全部指尖。
-2. 舒适地分开拇指与食指，小幅移动手掌观察光标；虚线框对应主屏全范围，不必把整个手掌放进框内。
-3. 捏合并松开产生一次点击。保持捏合并移动，超过拖动阈值后进入拖拽。
-4. 比 V 手势并上下移动滚动；退出滚动后先回到张开定位。
-5. 握拳暂停移动，将手放回舒服的位置，再分开拇指食指继续；默认从刚才的光标位置接着操作。
-6. 先在「点击与拖拽实验」中练习。要控制桌面时，再点击「启用系统鼠标控制」。
+| 操作 | 动作 |
+|---|---|
+| 移动 | 拇中捏住，小幅移动捏合点 |
+| 左键 | 食拇短捏，松食指完成点击 |
+| 右键 | 食指移开，拇指＋无名指轻捏 |
+| 拖拽 | 食拇保持捏合，按下后约 0.30 秒进入拖拽；松食指放下 |
+| 锁定 / 换位 | 松中指锁住位置，仍可点击；捏回后从原位置继续 |
+| 停止 | 全局 Esc 或窗口「停止控制」 |
 
-Esc 停止系统控制并暂停手势；也可点击「停止全部」。丢手超过 0.2 秒会释放按键，恢复后需先张开手。以上是原捏合基线的系统控制操作，仅限单手、主屏，尚不含右键；新右键与拖拽体验使用拇中定位入口，目前仅应用内。缩放、多屏、动态手势网络仍未提供。
+右键、拖拽、预览、置顶和本地记录都有开关；范围、抗抖、接触阈值和拖拽等待可展开设置。窗口显示处理 FPS、推理耗时、读帧后帧龄、跟踪丢失和已发送按钮计数，不冒充真人准确率。默认只保存本地性能与事件摘要，不保存视频或图像。
+
+支持单手、主屏幕；该模式暂未加入滚轮、跨屏或专门双击识别。macOS 和 Windows 共用核心和界面，Windows 真机仍待验收。规则交互不等于已完成课程 ML 工作：当前使用 MediaPipe 预训练跟踪，没有项目真人训练数据或自训练深度网络；后续仍需数据、模型对比、动作成本与舒适度实验。
+
+## 研究界面与旧基线
+
+应用内目标任务、静止抖动诊断和原有采集/训练工具保留。Mac 使用 `launch_tripod_mac.command`，Windows 使用 `launch_tripod_windows.cmd`，或 `uv run pinchpilot gui --interaction tripod`。这个研究入口中的三指模式仍只操作应用内练习区；桌面控制使用上面的独立入口。
+
+原捏合基线使用 `launch_mac.command` / `launch_windows.cmd` 或 `uv run pinchpilot gui`：手掌定位、食拇捏合点击/拖拽，V 手势滚动；它与三指方案的手势定义不同。旧单指因用户报告严重晃动和难用已搁置。
 
 ## 已暂搁置的单指 Demo
 
@@ -51,7 +55,7 @@ uv run pinchpilot gui --interaction finger-dwell
 uv run pinchpilot gui --interaction finger-dwell --demo
 ```
 
-## 小幅移动与休息
+## 原捏合基线的小幅移动与休息
 
 v0.2 默认选择「小幅移动 · 30% 范围」，即相机画面宽高各 30% 的手掌参考点位移映射到全屏。原来需要移动 60% 的画面距离；在相机、姿势不变时，同样屏幕位移所需的画面位移约减半。这不等于疲劳或实际手臂位移已经测得减半。
 
@@ -77,13 +81,13 @@ v0.2 默认选择「小幅移动 · 30% 范围」，即相机画面宽高各 30%
 winget install --id=astral-sh.uv -e
 ```
 
-重新打开终端，再双击 **launch_windows.cmd**。启动脚本会准备 Python 3.11 虚拟环境并按 `uv.lock` 安装依赖。首次安装需要联网。也可在两种系统上执行：
+重新打开终端，再双击 **launch_desktop_windows.cmd**。启动脚本会准备 Python 3.11 虚拟环境并按 `uv.lock` 安装依赖。首次安装需要联网。也可在两种系统上执行：
 
 ```sh
 uv sync --locked
 uv run pinchpilot doctor
-uv run pinchpilot gui --demo
-uv run pinchpilot gui
+uv run pinchpilot desktop --demo
+uv run pinchpilot desktop
 ```
 
 无需 GPU、CUDA、云端账号或 API key。不要把 `.venv` 从 Mac 复制到 Windows；每台电脑由 uv 创建自己的环境。项目目录尽量不要包含冒号；原课程文件夹名称中的冒号曾导致本机 uv 路径解析失败。
@@ -106,7 +110,7 @@ uv run pinchpilot gui
 | 感知 | OpenCV + MediaPipe Hand Landmarker | 相机图像到 21 个手部关键点 |
 | 特征与模型 | NumPy + scikit-learn | 归一化几何特征、RF/SVM、分组评测 |
 | 交互 | 纯 Python 状态机 | 张开后启用、确认、防抖、按下/释放生命周期 |
-| 系统接口 | macOS Quartz / Windows Win32 | 光标移动、左键、滚动与停止键 |
+| 系统接口 | macOS Quartz / Windows Win32 | 光标移动、左右键、拖拽、旧基线滚动与停止键 |
 | 实验产物 | JSONL、joblib、matplotlib | 数据、模型、指标、混淆矩阵 |
 
 MediaPipe 是复用的预训练视觉模型；本项目训练的是关键点之上的手形分类器。个人校准调整规则阈值，不等同于模型微调。当前没有自训练深度网络。
@@ -131,12 +135,14 @@ uv run pinchpilot calibrate --participant P01 --output data/profiles/P01.json
 ```sh
 uv run ruff check src tests
 uv run pytest -q
+uv run pinchpilot desktop --demo --smoke-seconds 3
 uv run pinchpilot gui --demo --smoke-seconds 3
 uv run python scripts/check_single_finger.py
 uv run python scripts/check_tripod.py
 ```
 
 - [项目定位、课程要求与里程碑](docs/PROJECT_PLAN.md)
+- [桌面测试版启动、数据与开关](docs/DESKTOP_TRIAL.md)
 - [采集与实验协议](docs/EXPERIMENTS.md)
 - [验证记录与待实测事项](docs/VALIDATION.md)
 - [设计与模块边界](docs/superpowers/specs/2026-09-21-pinchpilot-design.md)

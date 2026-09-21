@@ -28,10 +28,14 @@ class TripodConfig:
     right_hover_ratio: float = 0.38
     right_clear_ratio: float = 0.48
     right_confirm_seconds: float = 0.10
+    right_enabled: bool = True
+    drag_enabled: bool = True
     tracking_timeout: float = 0.20
     max_jump: float = 0.10
 
     def validate(self):
+        if not isinstance(self.right_enabled, bool) or not isinstance(self.drag_enabled, bool):
+            raise ValueError("右键和拖拽开关必须为布尔值")
         if self.mode != "tripod" or not all(
             math.isfinite(v) for k, v in vars(self).items() if k != "mode"
         ):
@@ -149,10 +153,22 @@ class TripodEngine:
     def _result(self, events=None, hint=None, cancelled=False):
         hints = {
             "WAIT_GRIP": "拇指与中指捏住，食指移开，接管指针",
-            "CONTROL": "拇中定位 · 食拇短捏左键、保持拖拽 · 拇无名指右键",
-            "FROZEN": "位置已锁住 · 仍可左/右键 · 移开食指、捏中指继续移动",
+            "CONTROL": (
+                "拇中定位 · 食拇短捏左键"
+                + ("、保持拖拽" if self.config.drag_enabled else "")
+                + (" · 拇无名指右键" if self.config.right_enabled else "")
+            ),
+            "FROZEN": (
+                "位置已锁住 · 仍可左/右键 · 移开食指、捏中指继续移动"
+                if self.config.right_enabled
+                else "位置已锁住 · 仍可左键 · 移开食指、捏中指继续移动"
+            ),
             "APPROACH": "食指接近拇指 · 指针已冻结 · 继续靠近按下",
-            "PRESSED": "左键已按下 · 松食指单击 · 保持到进度环满可拖拽",
+            "PRESSED": (
+                "左键已按下 · 松食指单击 · 保持到进度环满可拖拽"
+                if self.config.drag_enabled
+                else "左键已按下 · 松食指完成点击 · 拖拽已关闭"
+            ),
             "DRAG": (
                 "拖拽已就绪 · 保持食拇捏合移动 · 松食指放下"
                 if self.motion_engaged
@@ -181,7 +197,9 @@ class TripodEngine:
             right_contact=f.right_contact if f else None,
             progress=(
                 min(1.0, (self.last_time - self.press_since) / self.config.drag_hold_seconds)
-                if self.state == "PRESSED" and self.press_since is not None
+                if self.config.drag_enabled
+                and self.state == "PRESSED"
+                and self.press_since is not None
                 else None
             ),
             cancelled=cancelled,
@@ -230,7 +248,7 @@ class TripodEngine:
 
     def _update_right_ready(self, f, timestamp):
         cfg = self.config
-        if self.left_down or f.contact < cfg.clear_ratio:
+        if not cfg.right_enabled or self.left_down or f.contact < cfg.clear_ratio:
             self.right_ready = False
             self.right_clear_since = None
         elif f.right_contact >= cfg.right_clear_ratio:
@@ -253,7 +271,11 @@ class TripodEngine:
                 return self._idle(f, timestamp, [InputEvent("up", *self.pointer)])
             return self._result()
         self.clear_since = None
-        if self.state == "PRESSED" and timestamp - self.press_since >= cfg.drag_hold_seconds:
+        if (
+            cfg.drag_enabled
+            and self.state == "PRESSED"
+            and timestamp - self.press_since >= cfg.drag_hold_seconds
+        ):
             # Discard finger-closing motion before allowing held movement.
             self.state = "DRAG"
             if self.motion_engaged:
@@ -324,7 +346,9 @@ class TripodEngine:
         self.last_time = self.last_seen = t
         self.features, self.last_hand = f, frame.handedness
         cfg = self.config
-        right_near = self.right_ready and f.right_contact <= cfg.right_hover_ratio
+        right_near = (
+            cfg.right_enabled and self.right_ready and f.right_contact <= cfg.right_hover_ratio
+        )
         self._update_right_ready(f, t)
         if self.state == "WAIT_GRIP":
             if f.grip > cfg.grip_engage or f.contact < cfg.clear_ratio:

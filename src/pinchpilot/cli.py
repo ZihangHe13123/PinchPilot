@@ -24,6 +24,11 @@ def parser() -> argparse.ArgumentParser:
     )
     gui.add_argument("--smoke-seconds", type=float, help="在指定秒数后关闭，用于界面检查")
     gui.add_argument("--screenshot", type=Path, help="保存本程序窗口的截图")
+    desktop = sub.add_parser("desktop", help="日常桌面测试工具：拇中定位、左右键与拖拽")
+    desktop.add_argument("--workspace", type=Path, default=Path.cwd())
+    desktop.add_argument("--demo", action="store_true", help="合成演示，禁止系统鼠标输出")
+    desktop.add_argument("--smoke-seconds", type=float)
+    desktop.add_argument("--screenshot", type=Path)
     doctor = sub.add_parser("doctor", help="检查运行环境；不打开摄像头")
     doctor.add_argument("--output", type=Path)
     download = sub.add_parser("fetch-model", help="下载 Google 官方手部模型")
@@ -79,11 +84,18 @@ def environment_report() -> dict:
     }
     if sys.platform == "darwin":
         try:
+            import Quartz
             from ApplicationServices import AXIsProcessTrusted
 
             result["accessibility_trusted"] = bool(AXIsProcessTrusted())
+            result["input_monitoring_allowed"] = (
+                bool(Quartz.CGPreflightListenEventAccess())
+                if hasattr(Quartz, "CGPreflightListenEventAccess")
+                else None
+            )
         except ImportError:
             result["accessibility_trusted"] = None
+            result["input_monitoring_allowed"] = None
     return result
 
 
@@ -93,6 +105,10 @@ def main(argv=None) -> int:
     if args.command is None:
         args = cli.parse_args(["gui"])
     try:
+        if args.command == "desktop":
+            from .desktop import run_desktop
+
+            return run_desktop(args.workspace, args.demo, args.smoke_seconds, args.screenshot)
         if args.command == "gui":
             from .app import run_gui
 

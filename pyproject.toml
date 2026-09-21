@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pinchpilot"
-version = "0.6.0"
+version = "0.7.0"
 description = "Cross-platform webcam pinch interaction research prototype"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -36,6 +36,7 @@ only-include = ["src/pinchpilot", "tests", "scripts", "docs", "README.md", "THIR
                 "launch_mac.command", "launch_windows.cmd", "launch_flex_mac.command",
                 "launch_dwell_mac.command", "launch_flex_windows.cmd", "launch_dwell_windows.cmd",
                 "launch_tripod_mac.command", "launch_tripod_windows.cmd",
+                "launch_desktop_mac.command", "launch_desktop_windows.cmd",
                 ".github/workflows/checks.yml"]
 
 [tool.pytest.ini_options]
