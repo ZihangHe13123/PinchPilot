@@ -114,6 +114,8 @@ class CameraView(QWidget):
                 p.drawLine(points[4], points[12])
                 p.setPen(QPen(QColor("#ffce83"), 2, Qt.PenStyle.DashLine))
                 p.drawLine(points[8], points[4])
+                p.setPen(QPen(QColor("#c1a1ff"), 2, Qt.PenStyle.DashLine))
+                p.drawLine(points[16], points[4])
                 p.setPen(QPen(QColor("#9eaebd"), 1))
                 p.drawEllipse(middle, 5, 5)
             elif self.result and self.result.mode != "pinch":
@@ -169,6 +171,7 @@ class PracticeView(QWidget):
         self.virtual = True
         self.pointer = (0.5, 0.5)
         self.pressed = False
+        self.press_button = None
         self.dragging = False
         self.task = "click"
         self.index = 0
@@ -207,6 +210,7 @@ class PracticeView(QWidget):
         self.active, self.virtual, self.task = True, virtual, task
         self.index, self.misses, self.rows = 0, 0, []
         self.pressed = self.dragging = False
+        self.press_button = None
         self.pointer = tuple(metadata.get("initial_pointer") or (0.5, 0.5))
         self.feedback_progress = None
         self.started = self.trial_started = time.monotonic()
@@ -229,16 +233,24 @@ class PracticeView(QWidget):
         if not self.active:
             self.update()
             return
-        if kind == "down":
+        button = "right" if kind.startswith("right_") else "left"
+        if kind in ("down", "right_down"):
+            if self.pressed:
+                return
             self.pressed = True
+            self.press_button = button
             self.press_point = point
             if self.task == "drag":
-                self.dragging = self._inside(point, (0.35, 0.5), 28)
-        elif kind == "up" and self.pressed:
+                self.dragging = button == "left" and self._inside(point, (0.35, 0.5), 28)
+        elif kind in ("up", "right_up") and self.pressed and self.press_button == button:
             self.pressed = False
-            if self.task == "click":
-                hit = self._inside(point, self._target()) and self._inside(
-                    self.press_point, self._target()
+            self.press_button = None
+            expected_button = "right" if self.task == "right_click" else "left"
+            if self.task in ("click", "right_click"):
+                hit = (
+                    button == expected_button
+                    and self._inside(point, self._target())
+                    and self._inside(self.press_point, self._target())
                 )
             else:
                 hit = self.dragging and self._inside(point, self._target(), 30)
@@ -248,11 +260,13 @@ class PracticeView(QWidget):
                 "type": "attempt",
                 "trial": self.index + 1,
                 "hit": hit,
+                "button": button,
+                "expected_button": expected_button,
                 "elapsed_s": now - self.trial_started,
                 "pointer": point,
                 "target": self._target(),
                 "viewport": [self.width(), self.height()],
-                "radius_px": 24 if self.task == "click" else 30,
+                "radius_px": 30 if self.task == "drag" else 24,
             }
             self.rows.append(row)
             with self.path.open("a", encoding="utf-8") as f:
@@ -265,23 +279,27 @@ class PracticeView(QWidget):
             if self.index == len(self.target_list):
                 self.stop(completed=True)
             else:
-                self.progress.emit(f"第 {self.index + 1} / 8 个目标 · 失误 {self.misses}")
+                prefix = "右键命中 · " if hit and self.task == "right_click" else ""
+                self.progress.emit(f"{prefix}第 {self.index + 1} / 8 个目标 · 失误 {self.misses}")
         self.update()
 
     def feed(self, result: EngineResult):
         if not self.virtual:
             return
+        if result.cancelled:
+            self.cancel_press()
         self.feedback_progress = result.progress
         self.feedback_hint = result.hint
         if result.pointer is not None:
             self.pointer = result.pointer
         for event in result.events:
-            if event.kind in ("move", "down", "up"):
+            if event.kind in ("move", "down", "up", "right_down", "right_up"):
                 self._event(event.kind, (event.x, event.y))
         self.update()
 
     def cancel_press(self):
         self.pressed = self.dragging = False
+        self.press_button = None
         self.feedback_progress = None
         self.feedback_hint = ""
         self.update()
@@ -306,15 +324,23 @@ class PracticeView(QWidget):
         self.update()
 
     def mousePressEvent(self, event):
-        if not self.virtual and event.button() == Qt.MouseButton.LeftButton:
+        if not self.virtual and event.button() in (
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.RightButton,
+        ):
             self._event(
-                "down", (event.position().x() / self.width(), event.position().y() / self.height())
+                "right_down" if event.button() == Qt.MouseButton.RightButton else "down",
+                (event.position().x() / self.width(), event.position().y() / self.height()),
             )
 
     def mouseReleaseEvent(self, event):
-        if not self.virtual and event.button() == Qt.MouseButton.LeftButton:
+        if not self.virtual and event.button() in (
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.RightButton,
+        ):
             self._event(
-                "up", (event.position().x() / self.width(), event.position().y() / self.height())
+                "right_up" if event.button() == Qt.MouseButton.RightButton else "up",
+                (event.position().x() / self.width(), event.position().y() / self.height()),
             )
 
     def mouseMoveEvent(self, event):
@@ -332,14 +358,14 @@ class PracticeView(QWidget):
             p.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "同一任务，比较不同输入方式\n\n点击目标或拖动方块，结果会保存到本地",
+                "同一任务，比较不同输入方式\n\n选择左键、右键或拖拽任务，结果会保存到本地",
             )
         else:
             x, y = self._target()
             target = QPointF(x * self.width(), y * self.height())
-            p.setPen(QPen(QColor("#6de1d1"), 3))
+            p.setPen(QPen(QColor("#c1a1ff" if self.task == "right_click" else "#6de1d1"), 3))
             p.setBrush(QColor("#174f54"))
-            radius = 24 if self.task == "click" else 30
+            radius = 30 if self.task == "drag" else 24
             p.drawEllipse(target, radius, radius)
             p.setPen(QColor("white"))
             p.drawText(

@@ -95,7 +95,11 @@ def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
         kCGEventMouseMoved=5,
         kCGEventLeftMouseDown=1,
         kCGEventLeftMouseUp=2,
+        kCGEventRightMouseDragged=7,
+        kCGEventRightMouseDown=3,
+        kCGEventRightMouseUp=4,
         kCGMouseButtonLeft=0,
+        kCGMouseButtonRight=1,
         kCGHIDEventTap=0,
     )
     monkeypatch.setitem(sys.modules, "Quartz", q)
@@ -114,3 +118,52 @@ def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
     assert q.CGEventCreateMouseEvent.call_args.args[1] == 6
     output.close()
     assert q.CGEventCreateMouseEvent.call_args.args[1:3] == (2, (50, 60))
+    output.emit(InputEvent("right_down", 0.5, 0.5))
+    assert q.CGEventCreateMouseEvent.call_args.args[1] == 3
+    assert q.CGEventCreateMouseEvent.call_args.args[3] == 1
+    output.emit(InputEvent("move", 0.6, 0.5))
+    assert q.CGEventCreateMouseEvent.call_args.args[1] == 7
+    output.close()
+    assert q.CGEventCreateMouseEvent.call_args.args[1:] == (4, (50, 60), 1)
+    assert not output.right_down
+
+
+def test_windows_right_button_is_separate_and_close_releases_both_once(windows):
+    output, native, calls = windows
+    output.emit(InputEvent("right_down"))
+    assert output.right_down and not output.down
+    output.emit(InputEvent("right_up"))
+    assert not output.right_down
+    output.emit(InputEvent("down"))
+    output.emit(InputEvent("right_down"))
+    output.close()
+    output.close()
+    assert [row[0] for row in calls] == [8, 16, 2, 8, 4, 16]
+    assert not output.down and not output.right_down
+    native.SendInput.side_effect = None
+    native.SendInput.return_value = 0
+    with pytest.raises(OSError):
+        output.emit(InputEvent("right_down"))
+    assert not output.right_down
+
+
+def test_close_attempts_second_button_even_if_first_release_fails(windows):
+    output, native, calls = windows
+    output.emit(InputEvent("down"))
+    output.emit(InputEvent("right_down"))
+    native.SendInput.side_effect = [0, 1]
+    with pytest.raises(OSError):
+        output.close()
+    assert native.SendInput.call_count == 4
+    assert output.down and not output.right_down
+
+
+def test_failed_right_release_stays_tracked_until_cleanup(windows):
+    output, native, calls = windows
+    output.emit(InputEvent("right_down"))
+    native.SendInput.side_effect = [0, 1]
+    with pytest.raises(OSError):
+        output.emit(InputEvent("right_up"))
+    assert output.right_down
+    output.close()
+    assert not output.right_down

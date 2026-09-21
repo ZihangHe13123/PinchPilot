@@ -75,7 +75,7 @@ def test_open_hand_or_initial_three_finger_contact_cannot_arm_or_click():
     assert s.result.state == "CONTROL"
 
 
-def test_hover_freezes_before_displacement_and_contact_clicks_before_lift():
+def test_hover_freezes_contact_presses_and_lift_finishes_one_click():
     s = Sequence()
     s.frames(10)
     s.frames(20, x=0.53)
@@ -83,11 +83,12 @@ def test_hover_freezes_before_displacement_and_contact_clicks_before_lift():
     s.frames(3, x=0.55, contact=0.33)
     assert s.result.state == "APPROACH" and s.engine.pointer == anchor
     s.frames(4, x=0.56, contact=0.12)
-    assert s.result.state == "TOUCHED" and len(s.clicks()) == 1
-    assert [e.kind for e in s.events if e.kind != "move"] == ["down", "up"]
+    assert s.result.state == "PRESSED" and len(s.clicks()) == 1
+    assert [e.kind for e in s.events if e.kind != "move"] == ["down"]
     s.frames(45, x=0.56, contact=0.12)
     assert len(s.clicks()) == 1 and s.engine.pointer == anchor
     s.frames(8, x=0.56)
+    assert [e.kind for e in s.events if e.kind != "move"] == ["down", "up"]
     assert s.result.state == "CONTROL" and s.engine.pointer == anchor
     s.frames(20, x=0.56)
     assert s.engine.pointer == anchor
@@ -133,7 +134,7 @@ def test_release_freezes_and_thumb_index_can_click_repeatedly_at_that_location()
     s.frames(3, x=0.8, grip=False, contact=0.32)
     assert s.result.state == "APPROACH" and not s.clicks()
     s.frames(4, x=0.8, grip=False, contact=0.1)
-    assert s.result.state == "TOUCHED" and len(s.clicks()) == 1
+    assert s.result.state == "PRESSED" and len(s.clicks()) == 1
     assert all((e.x, e.y) == anchor for e in s.result.events)
     s.frames(40, x=0.8, grip=False, contact=0.1)
     assert len(s.clicks()) == 1
@@ -172,8 +173,8 @@ def test_holding_thumb_index_contact_cannot_click_again_when_middle_cycles():
     for _ in range(3):
         for grip in (False, True):
             s.frames(10, grip=grip, contact=0.1)
-            assert s.result.state == "TOUCHED" and s.engine.pointer == anchor
-            assert not s.engine.motion_engaged and len(s.clicks()) == 1
+            assert s.result.state == "DRAG" and s.engine.pointer == anchor
+            assert s.engine.motion_engaged == grip and len(s.clicks()) == 1
     s.frames(12)
     assert s.result.state == "CONTROL" and s.engine.pointer == anchor
     s.frames(4, contact=0.1)
@@ -190,7 +191,7 @@ def test_extending_only_middle_beyond_jump_threshold_still_allows_fallback():
         p[12] = (0.9, 0.8, 0.1)
         s.frame(replace(frame, landmarks=tuple(p)))
         assert s.engine.pointer == anchor
-    assert len(s.clicks()) == 1 and s.result.state == "TOUCHED"
+    assert len(s.clicks()) == 1 and s.result.state == "PRESSED"
 
 
 @pytest.mark.parametrize(
@@ -327,6 +328,9 @@ def test_generated_rest_noise_is_reduced_and_motion_remains_responsive():
         dict(grip_release=0.1),
         dict(confirm_seconds=0),
         dict(mode="pinch"),
+        dict(drag_hold_seconds=0),
+        dict(right_touch_ratio=0.5),
+        dict(right_confirm_seconds=float("nan")),
     ],
 )
 def test_invalid_config_rejected(change):
@@ -342,3 +346,157 @@ def test_missing_degenerate_landmarks_and_tick_are_safe():
     assert len(s.clicks()) == 1
     assert not s.engine.tick(s.t + 0.01).events
     assert s.engine.tick(s.t + 0.4).state == "WAIT_GRIP"
+
+
+@pytest.mark.parametrize("grip", [True, False])
+def test_right_click_freezes_fires_once_and_requires_ring_release(grip):
+    s = Sequence()
+    s.frames(10)
+    if not grip:
+        s.frames(5, grip=False)
+    anchor = s.engine.pointer
+    s.frames(3, grip=grip, x=0.52, right_contact=0.32)
+    assert s.result.state == "RIGHT_APPROACH" and s.engine.pointer == anchor
+    s.frames(6, grip=grip, x=0.54, right_contact=0.1)
+    assert s.result.state == "RIGHT_TOUCHED" and not s.engine.left_down
+    buttons = [e for e in s.events if e.kind != "move"]
+    assert [e.kind for e in buttons] == ["right_down", "right_up"]
+    assert all((e.x, e.y) == anchor for e in buttons)
+    s.frames(45, grip=grip, x=0.54, right_contact=0.1)
+    for _ in range(4):
+        s.frames(1, grip=grip, x=0.54)
+        s.frames(2, grip=grip, x=0.54, right_contact=0.1)
+    assert len([e for e in s.events if e.kind == "right_down"]) == 1
+    s.frames(8, grip=grip, x=0.54)
+    assert s.result.state == ("CONTROL" if grip else "FROZEN")
+    assert s.engine.pointer == anchor
+    s.frames(6, grip=grip, x=0.54, right_contact=0.1)
+    assert len([e for e in s.events if e.kind == "right_down"]) == 2
+
+
+def test_initial_curled_ring_does_not_trigger_or_block_left_click():
+    s = Sequence()
+    s.frames(30, right_contact=0.1)
+    assert s.result.state == "CONTROL"
+    assert not [e for e in s.events if e.kind != "move"]
+    s.frames(4, contact=0.1, right_contact=0.1)
+    s.frames(6, right_contact=0.1)
+    assert [e.kind for e in s.events if e.kind != "move"] == ["down", "up"]
+    s.frames(8)
+    s.frames(6, right_contact=0.1)
+    assert [e.kind for e in s.events if e.kind != "move"][-2:] == ["right_down", "right_up"]
+
+
+def test_simultaneous_click_contacts_are_rejected_and_require_both_clear():
+    s = Sequence()
+    s.frames(10)
+    s.frames(20, contact=0.1, right_contact=0.1)
+    assert s.result.state == "WAIT_CLEAR"
+    s.frames(10, right_contact=0.1)
+    assert not [e for e in s.events if e.kind != "move"]
+    s.frames(8)
+    s.frames(4, contact=0.1)
+    assert len(s.clicks()) == 1
+
+
+def test_ring_movement_during_left_hold_cannot_click_right_after_lift():
+    s = Sequence()
+    s.frames(10)
+    s.frames(4, contact=0.1)
+    s.frames(20, contact=0.1, right_contact=0.1)
+    s.frames(20, right_contact=0.1)
+    assert [e.kind for e in s.events if e.kind != "move"] == ["down", "up"]
+    s.frames(8)
+    s.frames(6, right_contact=0.1)
+    assert [e.kind for e in s.events if e.kind != "move"][-2:] == ["right_down", "right_up"]
+
+
+def test_right_candidate_cancelled_if_index_approaches_and_depth_rejects_overlap():
+    s = Sequence()
+    s.frames(10)
+    s.frames(1, right_contact=0.1)
+    s.frames(15, contact=0.1, right_contact=0.1)
+    assert s.result.state == "WAIT_CLEAR" and not s.clicks()
+    assert not [e for e in s.events if e.kind == "right_down"]
+    f = synthetic_tripod(1, right_contact=0.1)
+    p = list(f.landmarks)
+    p[16] = (*p[16][:2], 0.2)
+    assert tripod_features(replace(f, landmarks=tuple(p))).right_contact > 0.48
+
+
+def test_drag_wait_discards_closing_motion_then_moves_and_releases_without_kick():
+    s = Sequence()
+    s.frames(10)
+    anchor = s.engine.pointer
+    s.frames(4, contact=0.1)
+    assert s.result.progress < 0.2 and s.engine.left_down
+    s.frames(6, x=0.53, contact=0.1)
+    assert s.result.state == "PRESSED" and s.engine.pointer == anchor
+    s.frames(5, x=0.53, contact=0.1)
+    assert s.result.state == "DRAG" and s.engine.pointer == anchor
+    s.frames(15, x=0.56, contact=0.1)
+    assert s.engine.pointer[0] > anchor[0] + 0.08
+    drop = s.engine.pointer
+    s.frames(1, x=0.58)
+    assert s.engine.pointer == drop and s.engine.left_down
+    s.frames(4, x=0.58)
+    assert not s.engine.left_down and s.engine.pointer == drop
+    buttons = [e for e in s.events if e.kind != "move"]
+    assert [e.kind for e in buttons] == ["down", "up"]
+    assert (buttons[0].x, buttons[0].y) == anchor
+    assert (buttons[1].x, buttons[1].y) == drop
+
+
+def test_drag_can_clutch_and_regrip_with_index_still_held_without_new_press():
+    s = Sequence()
+    s.frames(10)
+    s.frames(16, contact=0.1)
+    s.frames(15, x=0.53, contact=0.1)
+    anchor = s.engine.pointer
+    s.frames(10, x=0.40, grip=False, contact=0.1)
+    assert s.engine.pointer == anchor and s.engine.left_down
+    s.frames(2, x=0.40, contact=0.1)
+    assert not s.engine.motion_engaged and s.engine.pointer == anchor
+    s.frames(8, x=0.40, contact=0.1)
+    assert s.engine.motion_engaged and s.engine.pointer == anchor
+    s.frames(15, x=0.43, contact=0.1)
+    assert s.engine.pointer[0] > anchor[0] + 0.08
+    s.frames(6, x=0.43, grip=False)
+    assert not s.engine.left_down
+    assert [e.kind for e in s.events if e.kind != "move"] == ["down", "up"]
+
+
+@pytest.mark.parametrize("held_frames", [4, 16])
+@pytest.mark.parametrize(
+    "reason", ["missing", "gap", "tick", "swap", "jump", "badtime", "pause", "reset"]
+)
+def test_every_press_interruption_releases_exactly_once_and_requires_new_arm(held_frames, reason):
+    s = Sequence()
+    s.frames(10)
+    s.frames(held_frames, contact=0.1)
+    assert s.engine.left_down
+    if reason == "missing":
+        result = s.engine.process(HandFrame(s.t + 1 / 30))
+    elif reason == "gap":
+        s.t += 0.4
+        result = s.engine.process(synthetic_tripod(s.t, contact=0.1))
+    elif reason == "tick":
+        result = s.engine.tick(s.t + 0.4)
+    elif reason == "swap":
+        result = s.engine.process(
+            replace(synthetic_tripod(s.t + 1 / 30, contact=0.1), handedness="Left")
+        )
+    elif reason == "jump":
+        result = s.engine.process(synthetic_tripod(s.t + 1 / 30, x=0.8, contact=0.1))
+    elif reason == "badtime":
+        result = s.engine.process(synthetic_tripod(s.t, contact=0.1))
+    elif reason == "pause":
+        result = s.engine.set_enabled(False)
+    else:
+        result = s.engine.reset()
+    assert result.cancelled and [e.kind for e in result.events] == ["up"]
+    assert not s.engine.left_down
+    assert not s.engine.tick(s.t + 0.5).events
+    s.engine.set_enabled(True)
+    s.frames(20, contact=0.1)
+    assert not s.engine.left_down and len(s.clicks()) == 1

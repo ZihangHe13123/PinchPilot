@@ -37,8 +37,8 @@ def noise_check(kind):
     return report
 
 
-def target_check(application, directory, frozen_click):
-    variant = "middle-released" if frozen_click else "middle-held"
+def target_check(application, directory, task, frozen_click):
+    variant = task + ("-middle-released" if frozen_click else "-middle-held")
     window = MainWindow(directory / f"{variant}-workspace", demo=True, interaction="tripod")
     window.timer.stop()
     window.resize(1240, 860)
@@ -46,11 +46,13 @@ def target_check(application, directory, frozen_click):
     engine = window.tripod_engine
     timestamp = 100.0
 
-    def frames(n, point=(0.5, 0.38), contact=0.85, grip=True):
+    def frames(n, point=(0.5, 0.38), contact=0.85, grip=True, right_contact=0.85):
         nonlocal timestamp
         for _ in range(n):
             timestamp += 1 / 30
-            frame = synthetic_tripod(timestamp, *point, grip=grip, contact=contact)
+            frame = synthetic_tripod(
+                timestamp, *point, grip=grip, contact=contact, right_contact=right_contact
+            )
             result = engine.process(frame)
             window._dispatch(result)
             window.camera_view.box = engine.active_box
@@ -58,28 +60,51 @@ def target_check(application, directory, frozen_click):
             window.metrics.setText(result.hint + "\n合成关键点 · 无相机或系统输入")
 
     try:
+        window.task_choice.setCurrentIndex(window.task_choice.findData(task))
         window.start_practice()
         frames(10)
         current = np.array([0.5, 0.38])
-        for index, target in enumerate(window.practice.target_list):
+
+        def move_to(target, contact=0.85):
+            nonlocal current
             point = (
                 np.array(engine.camera_anchor)
                 + (np.array(target) - engine.pointer_anchor) * engine.config.span
             )
             for value in np.linspace(current, point, 20):
-                frames(1, value)
-            frames(15, point)
+                frames(1, value, contact)
+            frames(15, point, contact)
+            current = point
+            return point
+
+        for index, target in enumerate(window.practice.target_list):
+            if task == "drag":
+                point = move_to((0.35, 0.5))
+                frames(16, point, 0.10)
+                assert engine.state == "DRAG" and window.practice.dragging
+                if index == 0:
+                    application.processEvents()
+                    assert window.grab().save(str(directory / f"{variant}-preview.png"))
+                point = move_to(target, 0.10)
+                if index == 1:
+                    window.tabs.setCurrentIndex(1)
+                    application.processEvents()
+                    assert window.grab().save(str(directory / f"{variant}-practice.png"))
+                frames(8, point)
+                continue
+            point = move_to(target)
+            key = "right_contact" if task == "right_click" else "contact"
             if frozen_click:
                 frames(5, point, grip=False)
                 assert engine.state == "FROZEN"
             else:
-                frames(3, point + 0.002, 0.32)
+                frames(3, point + 0.002, **{key: 0.32})
             if index == 0:
                 application.processEvents()
                 assert window.grab().save(str(directory / f"{variant}-preview.png"))
             if frozen_click:
-                frames(3, point + 0.002, 0.32, grip=False)
-            frames(4, point + 0.004, 0.10, grip=not frozen_click)
+                frames(3, point + 0.002, grip=False, **{key: 0.32})
+            frames(6, point + 0.004, grip=not frozen_click, **{key: 0.10})
             if index == 1:
                 window.tabs.setCurrentIndex(1)
                 application.processEvents()
@@ -89,6 +114,7 @@ def target_check(application, directory, frozen_click):
         assert window.practice.index == 8 and window.practice.misses == 0
         return {
             "variant": variant,
+            "task": task,
             "targets_hit": 8,
             "misses": 0,
             "task_log": str(window.practice.path),
@@ -106,7 +132,16 @@ def main():
         "source": "synthetic_engineering",
         "camera_opened": False,
         "os_events_sent": False,
-        "tasks": [target_check(application, directory, frozen) for frozen in (False, True)],
+        "tasks": [
+            target_check(application, directory, task, frozen)
+            for task, frozen in [
+                ("click", False),
+                ("click", True),
+                ("right_click", False),
+                ("right_click", True),
+                ("drag", False),
+            ]
+        ],
         "noise_profiles": {},
     }
     for kind in ("independent", "correlated"):

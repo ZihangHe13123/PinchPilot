@@ -18,6 +18,7 @@ def enable_dpi_awareness() -> None:
 class MouseOutput:
     def __init__(self):
         self.down = False
+        self.right_down = False
         self.scroll_remainder = 0.0
         if sys.platform == "darwin":
             import Quartz
@@ -136,38 +137,69 @@ class MouseOutput:
             else:
                 self._send_win(0x0800, lines * 120)
             return
-        if event.kind not in ("move", "down", "up"):
+        if event.kind not in ("move", "down", "up", "right_down", "right_up"):
             return
         if sys.platform == "darwin":
             q = self.q
+            moving = (
+                q.kCGEventLeftMouseDragged
+                if self.down
+                else (q.kCGEventRightMouseDragged if self.right_down else q.kCGEventMouseMoved)
+            )
             kind = {
-                "move": q.kCGEventLeftMouseDragged if self.down else q.kCGEventMouseMoved,
+                "move": moving,
                 "down": q.kCGEventLeftMouseDown,
                 "up": q.kCGEventLeftMouseUp,
+                "right_down": q.kCGEventRightMouseDown,
+                "right_up": q.kCGEventRightMouseUp,
             }[event.kind]
-            obj = q.CGEventCreateMouseEvent(None, kind, (x, y), q.kCGMouseButtonLeft)
+            right = event.kind.startswith("right_") or (
+                event.kind == "move" and self.right_down and not self.down
+            )
+            button = q.kCGMouseButtonRight if right else q.kCGMouseButtonLeft
+            obj = q.CGEventCreateMouseEvent(None, kind, (x, y), button)
             q.CGEventPost(q.kCGHIDEventTap, obj)
         else:
             if event.kind == "move":
                 if not self.user32.SetCursorPos(round(x), round(y)):
                     raise OSError("Windows 无法移动光标")
             else:
-                self._send_win(0x0002 if event.kind == "down" else 0x0004)
+                self._send_win(
+                    {"down": 0x0002, "up": 0x0004, "right_down": 0x0008, "right_up": 0x0010}[
+                        event.kind
+                    ]
+                )
         if event.kind in ("down", "up"):
             self.down = event.kind == "down"
+        if event.kind in ("right_down", "right_up"):
+            self.right_down = event.kind == "right_down"
 
     def close(self) -> None:
-        if self.down:
-            if sys.platform == "darwin":
-                q = self.q
-                point = q.CGEventGetLocation(q.CGEventCreate(None))
-                obj = q.CGEventCreateMouseEvent(
-                    None, q.kCGEventLeftMouseUp, point, q.kCGMouseButtonLeft
-                )
-                q.CGEventPost(q.kCGHIDEventTap, obj)
-            else:
-                self._send_win(0x0004)
-            self.down = False
+        failures = []
+        for right, held in ((False, self.down), (True, self.right_down)):
+            if not held:
+                continue
+            try:
+                if sys.platform == "darwin":
+                    q = self.q
+                    point = q.CGEventGetLocation(q.CGEventCreate(None))
+                    obj = q.CGEventCreateMouseEvent(
+                        None,
+                        q.kCGEventRightMouseUp if right else q.kCGEventLeftMouseUp,
+                        point,
+                        q.kCGMouseButtonRight if right else q.kCGMouseButtonLeft,
+                    )
+                    q.CGEventPost(q.kCGHIDEventTap, obj)
+                else:
+                    self._send_win(0x0010 if right else 0x0004)
+                if right:
+                    self.right_down = False
+                else:
+                    self.down = False
+            except Exception as error:
+                failures.append(error)
+        if failures:
+            raise failures[0]
 
 
 def camera_permission() -> str:

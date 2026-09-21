@@ -63,36 +63,65 @@ def test_tripod_settings_stop_trial_and_preserve_pinch_preferences(window):
     assert window.active_engine is window.engine and window.tripod_controls.isHidden()
 
 
-@pytest.mark.parametrize("frozen_click", [False, True])
-def test_tripod_engine_to_eight_targets_and_logging(window, frozen_click):
+@pytest.mark.parametrize(
+    "task,frozen_click",
+    [
+        ("click", False),
+        ("click", True),
+        ("right_click", False),
+        ("right_click", True),
+        ("drag", False),
+    ],
+)
+def test_tripod_engine_to_eight_targets_and_logging(window, task, frozen_click):
     window.practice.resize(800, 500)
+    window.task_choice.setCurrentIndex(window.task_choice.findData(task))
     window.start_practice()
     engine = window.tripod_engine
     timestamp = 100.0
 
-    def frames(n, x=0.5, y=0.38, contact=0.85, grip=True):
+    def frames(n, x=0.5, y=0.38, contact=0.85, grip=True, right_contact=0.85):
         nonlocal timestamp
         for _ in range(n):
             timestamp += 1 / 30
             window._dispatch(
-                engine.process(synthetic_tripod(timestamp, x, y, grip=grip, contact=contact))
+                engine.process(
+                    synthetic_tripod(
+                        timestamp, x, y, grip=grip, contact=contact, right_contact=right_contact
+                    )
+                )
             )
 
     frames(10)
     current = np.array([0.5, 0.38])
-    for target in window.practice.target_list:
+
+    def move_to(target, contact=0.85):
+        nonlocal current
         point = (
             np.array(engine.camera_anchor)
             + (np.array(target) - engine.pointer_anchor) * engine.config.span
         )
         for value in np.linspace(current, point, 20):
-            frames(1, *value)
-        frames(15, *point)
+            frames(1, *value, contact=contact)
+        frames(15, *point, contact=contact)
+        current = point
+        return point
+
+    for target in window.practice.target_list:
+        if task == "drag":
+            point = move_to((0.35, 0.5))
+            frames(16, *point, contact=0.10)
+            assert engine.state == "DRAG" and window.practice.dragging
+            point = move_to(target, contact=0.10)
+            frames(8, *point)
+            continue
+        point = move_to(target)
         if frozen_click:
             frames(5, *point, grip=False)
             assert engine.state == "FROZEN"
-        frames(3, *(point + 0.002), contact=0.32, grip=not frozen_click)
-        frames(4, *(point + 0.004), contact=0.10, grip=not frozen_click)
+        key = "right_contact" if task == "right_click" else "contact"
+        frames(3, *(point + 0.002), grip=not frozen_click, **{key: 0.32})
+        frames(6, *(point + 0.004), grip=not frozen_click, **{key: 0.10})
         frames(12, *point)
         current = point
     assert window.practice.index == 8 and window.practice.misses == 0
@@ -101,6 +130,105 @@ def test_tripod_engine_to_eight_targets_and_logging(window, frozen_click):
     assert rows[0]["interaction_mode"] == "tripod" and rows[0]["source"] == "synthetic_demo"
     assert rows[0]["config"]["deadband"] == 0.008
     assert rows[0]["app_version"] == app_module.__version__
+    assert rows[0]["task"] == task
+    assert all(row["button"] == row["expected_button"] for row in rows if row["type"] == "attempt")
+
+
+def test_wrong_button_does_not_pass_right_task_and_cancelled_press_does_not_score(window):
+    window.task_choice.setCurrentIndex(window.task_choice.findData("right_click"))
+    window.start_practice()
+    target = window.practice.target_list[0]
+    window._dispatch(
+        EngineResult(
+            "CONTROL",
+            target,
+            [InputEvent("down", *target), InputEvent("up", *target)],
+            mode="tripod",
+        )
+    )
+    assert window.practice.index == 0 and window.practice.misses == 1
+    window._dispatch(
+        EngineResult(
+            "RIGHT_TOUCHED",
+            target,
+            [InputEvent("right_down", *target), InputEvent("right_up", *target)],
+            mode="tripod",
+        )
+    )
+    assert window.practice.index == 1
+    window.task_choice.setCurrentIndex(0)
+    assert not window.practice.active
+    window.start_practice()
+    window._dispatch(EngineResult("PRESSED", target, [InputEvent("down", *target)], mode="tripod"))
+    window._dispatch(
+        EngineResult(
+            "WAIT_GRIP", target, [InputEvent("up", *target)], mode="tripod", cancelled=True
+        )
+    )
+    assert (
+        window.practice.index == 0 and window.practice.misses == 0 and not window.practice.pressed
+    )
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["pause", "stop", "end_task", "recenter", "mode", "settings", "task", "method", "emergency"],
+)
+def test_app_lifecycle_cancels_held_drag_without_success_or_stuck_button(window, action):
+    window.task_choice.setCurrentIndex(window.task_choice.findData("drag"))
+    window.start_practice()
+    engine = window.tripod_engine
+    for index in range(30):
+        window._dispatch(
+            engine.process(synthetic_tripod(100 + index / 30, contact=0.85 if index < 10 else 0.1))
+        )
+    assert engine.left_down and window.practice.pressed
+    if action == "pause":
+        window._pause(True)
+    elif action == "stop":
+        window.stop_all()
+    elif action == "end_task":
+        window.stop_practice()
+    elif action == "recenter":
+        window._recenter_finger()
+    elif action == "mode":
+        window.interaction_choice.setCurrentIndex(0)
+    elif action == "settings":
+        window.tripod_controls.drag_hold.setCurrentIndex(1)
+    elif action == "task":
+        window.task_choice.setCurrentIndex(0)
+    elif action == "method":
+        window.task_method.setCurrentIndex(1)
+    else:
+        window._emergency()
+    assert not engine.left_down and not window.practice.pressed
+    assert window.practice.index == 0 and window.practice.misses == 0
+
+
+def test_physical_right_button_is_scored_as_right_and_legacy_modes_cannot_start_it(window):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    window.task_method.setCurrentIndex(1)
+    window.task_choice.setCurrentIndex(window.task_choice.findData("right_click"))
+    window.start_practice()
+    x, y = window.practice.target_list[0]
+    QTest.mouseClick(
+        window.practice,
+        Qt.MouseButton.RightButton,
+        pos=QPoint(round(x * window.practice.width()), round(y * window.practice.height())),
+    )
+    assert window.practice.index == 1
+    window.task_method.setCurrentIndex(0)
+    window.interaction_choice.setCurrentIndex(0)
+    assert not window.task_choice.model().item(2).isEnabled()
+    window.task_choice.setCurrentIndex(2)
+    assert window.task_choice.currentData() == "click"
+    window.task_choice.blockSignals(True)
+    window.task_choice.setCurrentIndex(2)
+    window.task_choice.blockSignals(False)
+    window.start_practice()
+    assert not window.practice.active
 
 
 def test_probe_rejects_demo_and_cancels_on_mode_change(window):
@@ -135,14 +263,15 @@ def test_probe_only_counts_fresh_observed_control_and_reports_spread():
 
 
 @pytest.mark.parametrize(
-    "condition", ["TOUCHED", "FROZEN", "WAIT_CLEAR", "edge", "stalled", "cancelled"]
+    "condition",
+    ["PRESSED", "DRAG", "RIGHT_TOUCHED", "FROZEN", "WAIT_CLEAR", "edge", "stalled", "cancelled"],
 )
 def test_probe_rejects_misleading_zero_jitter_conditions(condition):
     probe = StabilityProbe(100, {})
     step = 0.4 if condition == "stalled" else 1 / 30
     for timestamp in np.arange(100, 108, step):
         result = probe_result(
-            state=condition if condition in ("TOUCHED", "FROZEN", "WAIT_CLEAR") else "CONTROL",
+            state=condition if condition.isupper() else "CONTROL",
             raw=(1.2, 0.5) if condition == "edge" else (0.5, 0.5),
         )
         probe.add(float(timestamp), result)

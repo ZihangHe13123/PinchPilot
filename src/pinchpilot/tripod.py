@@ -1,4 +1,4 @@
-"""Thumb-middle grip points; thumb-index contact clicks, including while frozen."""
+"""Thumb-middle points, thumb-index presses/drags, thumb-ring right-clicks."""
 
 import math
 from dataclasses import dataclass, replace
@@ -23,6 +23,11 @@ class TripodConfig:
     clear_ratio: float = 0.48
     arm_seconds: float = 0.12
     confirm_seconds: float = 0.06
+    drag_hold_seconds: float = 0.30
+    right_touch_ratio: float = 0.26
+    right_hover_ratio: float = 0.38
+    right_clear_ratio: float = 0.48
+    right_confirm_seconds: float = 0.10
     tracking_timeout: float = 0.20
     max_jump: float = 0.10
 
@@ -41,6 +46,18 @@ class TripodConfig:
             raise ValueError("食拇触碰阈值无效")
         if not 0.06 <= self.arm_seconds <= 0.5 or not 0.03 <= self.confirm_seconds <= 0.2:
             raise ValueError("三指确认时长无效")
+        if not 0.15 <= self.drag_hold_seconds <= 0.8:
+            raise ValueError("拖拽等待时长无效")
+        if (
+            not 0.08
+            <= self.right_touch_ratio
+            < self.right_hover_ratio
+            < self.right_clear_ratio
+            <= 1
+        ):
+            raise ValueError("右键触碰阈值无效")
+        if not 0.06 <= self.right_confirm_seconds <= 0.3:
+            raise ValueError("右键确认时长无效")
         if not 0.1 <= self.tracking_timeout <= 0.5 or not 0.04 <= self.max_jump <= 0.3:
             raise ValueError("三指追踪中断配置无效")
 
@@ -52,6 +69,7 @@ class TripodFeatures:
     scale: float
     grip: float
     contact: float
+    right_contact: float
 
 
 def tripod_features(frame: HandFrame) -> TripodFeatures | None:
@@ -76,6 +94,7 @@ def tripod_features(frame: HandFrame) -> TripodFeatures | None:
         scale,
         grip,
         contact,
+        float(np.linalg.norm(xyz[16] - xyz[4]) / scale),
     )
 
 
@@ -85,9 +104,14 @@ class TripodEngine:
         self.config.validate()
         self.enabled = True
         self.pointer = None
+        self.left_down = False
         self.reset()
 
     def reset(self) -> EngineResult:
+        cancelled = self.left_down
+        events = [InputEvent("up", *(self.pointer or (0.5, 0.5)))] if cancelled else []
+        self.left_down = False
+        self.press_since = None
         self.state = "WAIT_GRIP" if self.enabled else "PAUSED"
         self.last_time = self.last_seen = None
         self.last_hand = ""
@@ -96,9 +120,12 @@ class TripodEngine:
         self.pointer_anchor = self.pointer or (0.5, 0.5)
         self.raw_pointer = None
         self.motion_engaged = False
+        self.right_ready = False
+        self.right_clear_since = None
+        self.require_both_clear = False
         self.arm_since = self.touch_since = self.clear_since = None
         self.stabilizer = None
-        return self._result()
+        return self._result(events, cancelled=cancelled)
 
     def set_enabled(self, enabled):
         self.enabled = enabled
@@ -110,7 +137,7 @@ class TripodEngine:
             and timestamp - self.last_seen >= self.config.tracking_timeout
         ):
             return self.reset()
-        return replace(self.last_result, events=[])
+        return replace(self.last_result, events=[], cancelled=False)
 
     @property
     def active_box(self):
@@ -119,18 +146,25 @@ class TripodEngine:
         left, top = tuple(c - p * span for c, p in zip(center, self.pointer_anchor))
         return left, top, left + span, top + span
 
-    def _result(self, events=None, hint=None):
+    def _result(self, events=None, hint=None, cancelled=False):
         hints = {
             "WAIT_GRIP": "拇指与中指捏住，食指移开，接管指针",
-            "CONTROL": "移动拇中捏合点定位 · 食拇相碰点击 · 松中指可锁住位置",
-            "FROZEN": "位置已锁住 · 食指碰拇指仍可点击 · 移开食指后捏住中指继续移动",
-            "APPROACH": "食指接近拇指 · 指针已冻结 · 再靠近一点点击",
-            "TOUCHED": (
-                "已点击 · 食指离开拇指后继续定位"
+            "CONTROL": "拇中定位 · 食拇短捏左键、保持拖拽 · 拇无名指右键",
+            "FROZEN": "位置已锁住 · 仍可左/右键 · 移开食指、捏中指继续移动",
+            "APPROACH": "食指接近拇指 · 指针已冻结 · 继续靠近按下",
+            "PRESSED": "左键已按下 · 松食指单击 · 保持到进度环满可拖拽",
+            "DRAG": (
+                "拖拽已就绪 · 保持食拇捏合移动 · 松食指放下"
                 if self.motion_engaged
-                else "已点击 · 位置保持锁住 · 食指离开拇指后可再点"
+                else "拖拽位置锁住 · 捏中指可继续拖 · 松食指放下"
             ),
-            "WAIT_CLEAR": "位置已锁住 · 请先分开食指和拇指，再捏合点击",
+            "RIGHT_APPROACH": "无名指接近拇指 · 位置已冻结 · 食指保持分开",
+            "RIGHT_TOUCHED": "右键已触发 · 松开无名指后可继续操作",
+            "WAIT_CLEAR": (
+                "动作已取消 · 请先分开食指、无名指与拇指，再试"
+                if self.require_both_clear
+                else "位置已锁住 · 请先分开食指和拇指，再捏合点击"
+            ),
             "PAUSED": "已暂停 · 恢复后重新捏住拇中",
         }
         f = self.features
@@ -144,6 +178,13 @@ class TripodEngine:
             grip=f.grip if f else None,
             contact=f.contact if f else None,
             raw_pointer=self.raw_pointer,
+            right_contact=f.right_contact if f else None,
+            progress=(
+                min(1.0, (self.last_time - self.press_since) / self.config.drag_hold_seconds)
+                if self.state == "PRESSED" and self.press_since is not None
+                else None
+            ),
+            cancelled=cancelled,
         )
         return self.last_result
 
@@ -157,17 +198,114 @@ class TripodEngine:
         self.stabilizer.update(self.pointer, timestamp)
 
     def _disarm(self, f, frame, hint=None):
-        self.reset()
+        stopped = self.reset()
         self.features = f
         self.last_time = self.last_seen = frame.timestamp
         self.last_hand = frame.handedness
-        return self._result(hint=hint)
+        return self._result(stopped.events, hint, cancelled=stopped.cancelled)
+
+    def _move(self, timestamp):
+        point = self.stabilizer.update(self.raw_pointer, timestamp)
+        self.pointer = tuple(min(1.0, max(0.0, v)) for v in point)
+        return self._result([InputEvent("move", *self.pointer)])
+
+    def _idle(self, f, timestamp, events=None):
+        self.touch_since = self.clear_since = self.arm_since = None
+        self.require_both_clear = False
+        events = list(events or [])
+        if self.motion_engaged:
+            self._anchor(f, timestamp)
+            self.state = "CONTROL"
+            events.append(InputEvent("move", *self.pointer))
+        else:
+            self.state = "FROZEN"
+        return self._result(events)
+
+    def _wait_clear(self, both=False):
+        self.state = "WAIT_CLEAR"
+        self.require_both_clear = both
+        self.touch_since = self.clear_since = self.arm_since = None
+        self.right_ready = False
+        return self._result()
+
+    def _update_right_ready(self, f, timestamp):
+        cfg = self.config
+        if self.left_down or f.contact < cfg.clear_ratio:
+            self.right_ready = False
+            self.right_clear_since = None
+        elif f.right_contact >= cfg.right_clear_ratio:
+            if self.right_clear_since is None:
+                self.right_clear_since = timestamp
+            if timestamp - self.right_clear_since >= cfg.confirm_seconds:
+                self.right_ready = True
+        else:
+            self.right_clear_since = None
+
+    def _pressed(self, f, timestamp):
+        cfg = self.config
+        if f.contact >= cfg.clear_ratio:
+            # Freeze from the first separating frame, before confirming release.
+            if self.clear_since is None:
+                self.clear_since = timestamp
+            if timestamp - self.clear_since >= cfg.confirm_seconds:
+                self.left_down = False
+                self.press_since = None
+                return self._idle(f, timestamp, [InputEvent("up", *self.pointer)])
+            return self._result()
+        self.clear_since = None
+        if self.state == "PRESSED" and timestamp - self.press_since >= cfg.drag_hold_seconds:
+            # Discard finger-closing motion before allowing held movement.
+            self.state = "DRAG"
+            if self.motion_engaged:
+                self._anchor(f, timestamp)
+            return self._result()
+        if self.state == "DRAG" and self.motion_engaged:
+            return self._move(timestamp)
+        return self._result()
+
+    def _right(self, f, timestamp):
+        cfg = self.config
+        if f.contact < cfg.clear_ratio:
+            return self._wait_clear(both=True)
+        if f.right_contact >= cfg.right_clear_ratio:
+            self.touch_since = None
+            if self.clear_since is None:
+                self.clear_since = timestamp
+            if timestamp - self.clear_since >= cfg.confirm_seconds:
+                return self._idle(f, timestamp)
+            return self._result()
+        self.clear_since = None
+        if self.state == "RIGHT_APPROACH":
+            if f.right_contact <= cfg.right_touch_ratio:
+                if self.touch_since is None:
+                    self.touch_since = timestamp
+                if timestamp - self.touch_since >= cfg.right_confirm_seconds:
+                    self.state = "RIGHT_TOUCHED"
+                    self.right_ready = False
+                    return self._result(
+                        [
+                            InputEvent("move", *self.pointer),
+                            InputEvent("right_down", *self.pointer),
+                            InputEvent("right_up", *self.pointer),
+                        ]
+                    )
+            else:
+                self.touch_since = None
+        return self._result()
 
     def process(self, frame: HandFrame) -> EngineResult:
         t = frame.timestamp
         if not math.isfinite(t) or (self.last_time is not None and t <= self.last_time):
             return self.reset()
-        self.tick(t)
+        expired = self.tick(t)
+        result = self._process(frame)
+        # A returned frame must not swallow an earlier timeout's button release.
+        result.events = expired.events + result.events
+        result.cancelled = expired.cancelled or result.cancelled
+        return result
+
+    def _process(self, frame):
+        t = frame.timestamp
         if not self.enabled:
             return self._result()
         f = tripod_features(frame)
@@ -186,6 +324,8 @@ class TripodEngine:
         self.last_time = self.last_seen = t
         self.features, self.last_hand = f, frame.handedness
         cfg = self.config
+        right_near = self.right_ready and f.right_contact <= cfg.right_hover_ratio
+        self._update_right_ready(f, t)
         if self.state == "WAIT_GRIP":
             if f.grip > cfg.grip_engage or f.contact < cfg.clear_ratio:
                 self.arm_since = None
@@ -205,23 +345,27 @@ class TripodEngine:
             self.motion_engaged = False
             self.raw_pointer = None
             self.arm_since = self.touch_since = self.clear_since = None
-            if self.state != "TOUCHED":
+            if not self.left_down:
+                if self.state == "RIGHT_TOUCHED":
+                    return self._result()
+                if self.state == "RIGHT_APPROACH" or self.require_both_clear or right_near:
+                    return self._wait_clear(both=True)
                 self.state = "FROZEN" if f.contact >= cfg.clear_ratio else "WAIT_CLEAR"
-            return self._result()
+                return self._result()
         if not self.motion_engaged:
-            if (
-                self.state == "FROZEN"
-                and f.grip <= cfg.grip_engage
-                and f.contact >= cfg.clear_ratio
+            if f.grip <= cfg.grip_engage and (
+                (self.left_down and f.contact < cfg.clear_ratio)
+                or (self.state == "FROZEN" and f.contact >= cfg.clear_ratio and not right_near)
             ):
                 if self.arm_since is None:
                     self.arm_since = t
                 if t - self.arm_since >= cfg.arm_seconds:
                     self._anchor(f, t)
                     self.motion_engaged = True
-                    self.state = "CONTROL"
                     self.arm_since = None
-                    return self._result([InputEvent("move", *self.pointer)])
+                    if not self.left_down:
+                        self.state = "CONTROL"
+                        return self._result([InputEvent("move", *self.pointer)])
             else:
                 self.arm_since = None
         else:
@@ -229,28 +373,33 @@ class TripodEngine:
                 a + (v - c) / cfg.span
                 for a, v, c in zip(self.pointer_anchor, f.point, self.camera_anchor)
             )
+        if self.left_down:
+            return self._pressed(f, t)
+        if self.state in ("RIGHT_APPROACH", "RIGHT_TOUCHED"):
+            return self._right(f, t)
         if self.state in ("CONTROL", "FROZEN"):
+            if right_near:
+                if f.contact < cfg.clear_ratio:
+                    return self._wait_clear(both=True)
+                self.state = "RIGHT_APPROACH"
+                self.touch_since = self.clear_since = None
+                return self._right(f, t)
             if f.contact > cfg.hover_ratio:
                 if self.motion_engaged:
-                    point = self.stabilizer.update(self.raw_pointer, t)
-                    self.pointer = tuple(min(1.0, max(0.0, v)) for v in point)
-                    return self._result([InputEvent("move", *self.pointer)])
+                    return self._move(t)
                 return self._result()
             # Freeze the previous pointer before this frame's contacting hand can
             # move it. Index coordinates NEVER enter the pointing calculation.
             self.state = "APPROACH"
             self.touch_since = self.clear_since = None
-        if f.contact >= cfg.clear_ratio:
+        if f.contact >= cfg.clear_ratio and (
+            not self.require_both_clear or f.right_contact >= cfg.right_clear_ratio
+        ):
             self.touch_since = None
             if self.clear_since is None:
                 self.clear_since = t
             if t - self.clear_since >= cfg.confirm_seconds:
-                self.clear_since = None
-                if self.motion_engaged:
-                    self._anchor(f, t)
-                    self.state = "CONTROL"
-                    return self._result([InputEvent("move", *self.pointer)])
-                self.state = "FROZEN"
+                return self._idle(f, t)
             return self._result()
         self.clear_since = None
         if self.state == "APPROACH":
@@ -258,12 +407,14 @@ class TripodEngine:
                 if self.touch_since is None:
                     self.touch_since = t
                 if t - self.touch_since >= cfg.confirm_seconds:
-                    self.state = "TOUCHED"
+                    self.state = "PRESSED"
+                    self.left_down = True
+                    self.press_since = t
+                    self.right_ready = False
                     return self._result(
                         [
                             InputEvent("move", *self.pointer),
                             InputEvent("down", *self.pointer),
-                            InputEvent("up", *self.pointer),
                         ]
                     )
             else:

@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         names = QVBoxLayout()
         title = QLabel("PinchPilot")
         title.setObjectName("title")
-        subtitle = QLabel("稳定定位 · 食拇主动点击     /     摄像头交互研究原型")
+        subtitle = QLabel("稳定定位 · 左右键与拖拽     /     摄像头交互研究原型")
         subtitle.setObjectName("subtitle")
         names.addWidget(title)
         names.addWidget(subtitle)
@@ -182,14 +182,16 @@ class MainWindow(QMainWindow):
         self.task_choice = QComboBox()
         self.task_choice.addItem("点击目标", "click")
         self.task_choice.addItem("拖拽到圆环", "drag")
+        self.task_choice.addItem("右键目标", "right_click")
+        self.task_choice.currentIndexChanged.connect(self._change_task_inputs)
         self.task_method = QComboBox()
         self.task_method.addItem("手势 · 应用内", True)
         self.task_method.addItem("鼠标 / 触控板", False)
-        self.task_method.currentIndexChanged.connect(self._update_task_options)
+        self.task_method.currentIndexChanged.connect(self._change_task_inputs)
         starttask = QPushButton("开始 8 个目标")
         starttask.clicked.connect(self.start_practice)
         endtask = QPushButton("结束")
-        endtask.clicked.connect(lambda: self.practice.stop())
+        endtask.clicked.connect(self.stop_practice)
         for w in (self.task_choice, self.task_method, starttask, endtask):
             taskrow.addWidget(w)
         pl.addLayout(taskrow)
@@ -220,7 +222,7 @@ class MainWindow(QMainWindow):
         controls, layout = self._group("01  输入与控制")
         self.interaction_choice = QComboBox()
         self.interaction_choice.addItem("捏合 · 当前主方案", "pinch")
-        self.interaction_choice.addItem("三指 · 拇中定位＋食拇点击", "tripod")
+        self.interaction_choice.addItem("拇中定位 · 左右键与拖拽", "tripod")
         self.interaction_choice.addItem("单指 · 轻弯（暂搁置）", "finger-flex")
         self.interaction_choice.addItem("单指 · 停留（暂搁置）", "finger-dwell")
         self.interaction_choice.currentIndexChanged.connect(self._change_interaction)
@@ -398,7 +400,7 @@ class MainWindow(QMainWindow):
     def recognizer_name(self):
         if self.interaction_mode == "pinch":
             return self.recognizer.currentText()
-        return "三指规则 Demo" if self.interaction_mode == "tripod" else "单指规则 Demo"
+        return "拇中定位规则 Demo" if self.interaction_mode == "tripod" else "单指规则 Demo"
 
     def _refresh_interaction_controls(self):
         single = self.interaction_mode != "pinch"
@@ -413,7 +415,9 @@ class MainWindow(QMainWindow):
         self.models_group.setEnabled(not single)
         self.capture_group.setTitle("02  实验标识（实验模式）" if single else "02  采集与个人校准")
         self.input_help.setText(
-            "进入「点击与拖拽实验」开始点击任务。当前模式只提供定位、点击和暂停。"
+            "进入「点击与拖拽实验」，分别选择点击、右键和拖拽任务。当前仅应用内。"
+            if self.interaction_mode == "tripod"
+            else "进入「点击与拖拽实验」开始点击任务。当前模式只提供定位、点击和暂停。"
             if single
             else "首次启动可能请求相机权限。真实控制仅作用于主屏；录制与校准时自动回到预览。"
         )
@@ -430,10 +434,26 @@ class MainWindow(QMainWindow):
         self._update_task_options()
 
     def _update_task_options(self, _=None):
-        allow_drag = self.interaction_mode == "pinch" or not self.task_method.currentData()
+        allow_drag = (
+            self.interaction_mode in ("pinch", "tripod") or not self.task_method.currentData()
+        )
+        allow_right = self.interaction_mode == "tripod" or not self.task_method.currentData()
         self.task_choice.model().item(1).setEnabled(allow_drag)
-        if not allow_drag:
+        self.task_choice.model().item(2).setEnabled(allow_right)
+        if (self.task_choice.currentData() == "drag" and not allow_drag) or (
+            self.task_choice.currentData() == "right_click" and not allow_right
+        ):
             self.task_choice.setCurrentIndex(0)
+
+    def _change_task_inputs(self, _=None):
+        if self.practice.active:
+            self.stop_practice()
+            self.set_notice("任务类型或输入方式已改变，请重新开始一轮。")
+        self._update_task_options()
+
+    def stop_practice(self):
+        self.practice.stop()
+        self._dispatch(self.active_engine.reset())
 
     def _change_interaction(self, _=None):
         self._finish_probe(cancelled=True)
@@ -496,7 +516,7 @@ class MainWindow(QMainWindow):
             or self.source != "camera"
             or time.monotonic() - self.last_packet_at > 0.25
         ):
-            self.set_notice("静止记录需要三指模式与新鲜的真实相机帧；合成演示不作为真人记录。")
+            self.set_notice("静止记录需要拇中定位模式与新鲜的真实相机帧；合成演示不作为真人记录。")
             return
         self._disable_live()
         self.practice.stop()
@@ -630,8 +650,8 @@ class MainWindow(QMainWindow):
         )
         if self.interaction_mode == "tripod":
             hint = (
-                "支撑前臂，拇中捏住接管；食指碰拇指点一次，分开再点。"
-                "松中指锁住位置后仍可点击，Esc 暂停。"
+                "拇中捏住定位；食拇短捏松开左键，保持到进度环满可拖拽。"
+                "食指移开，拇指＋无名指右键。Esc 暂停。"
             )
         self.set_notice(camera_permission() + "。" + hint)
 
@@ -664,7 +684,7 @@ class MainWindow(QMainWindow):
         if self.interaction_mode != "pinch":
             self.live_button.setText("实验模式 · 仅应用内")
             self.chip.setText(
-                "三指 Demo · 应用内练习"
+                "手势 Demo · 应用内练习"
                 if self.interaction_mode == "tripod"
                 else "单指 Demo · 应用内练习"
             )
@@ -675,7 +695,7 @@ class MainWindow(QMainWindow):
             return
         if self.interaction_mode != "pinch":
             self._disable_live()
-            self.set_notice("当前实验模式仅用于应用内点击练习，暂不接管系统鼠标。")
+            self.set_notice("当前实验模式仅用于应用内练习，暂不接管系统鼠标。")
             return
         if self.source != "camera" or self.recorder or self.countdown or self.training_busy:
             self._disable_live()
@@ -782,6 +802,7 @@ class MainWindow(QMainWindow):
                         {
                             "timestamp": time.monotonic(),
                             "app_version": __version__,
+                            "cancelled": result.cancelled,
                             "source": self.source,
                             "output": "os" if self.output else "preview",
                             "recognizer": self.recognizer_name,
@@ -866,7 +887,8 @@ class MainWindow(QMainWindow):
         if self.interaction_mode == "tripod":
             grip = f"{result.grip:.2f}" if result.grip is not None else "—"
             contact = f"{result.contact:.2f}" if result.contact is not None else "—"
-            detail = f"{result.hint}\n拇中间距 {grip}    ·    食拇间距 {contact}"
+            right = f"{result.right_contact:.2f}" if result.right_contact is not None else "—"
+            detail = f"{result.hint}\n拇中 {grip}    ·    食拇 {contact}    ·    拇无名指 {right}"
         elif self.interaction_mode != "pinch":
             bend = f"{result.bend:.2f}" if result.bend is not None else "—"
             detail = f"{result.hint}\n{result.state}    ·    屈曲量（几何代理） {bend}"
@@ -1080,12 +1102,14 @@ class MainWindow(QMainWindow):
         if virtual and self.source == "none":
             self.set_notice("手势任务需要先启动相机或演示。")
             return
-        if (
-            virtual
-            and self.interaction_mode != "pinch"
-            and self.task_choice.currentData() != "click"
-        ):
-            self.set_notice("当前实验模式只支持点击目标。")
+        task = self.task_choice.currentData()
+        supported = (
+            {"click", "drag", "right_click"}
+            if self.interaction_mode == "tripod"
+            else ({"click", "drag"} if self.interaction_mode == "pinch" else {"click"})
+        )
+        if virtual and task not in supported:
+            self.set_notice("当前模式不支持所选任务。")
             return
         if virtual:
             self.active_engine.pointer = (0.5, 0.5)

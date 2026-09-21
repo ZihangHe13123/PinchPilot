@@ -49,6 +49,8 @@ class EngineResult:
     grip: float | None = None
     contact: float | None = None
     raw_pointer: tuple[float, float] | None = None
+    right_contact: float | None = None
+    cancelled: bool = False
 
 
 @dataclass

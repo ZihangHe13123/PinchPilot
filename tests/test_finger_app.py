@@ -103,7 +103,9 @@ def test_settings_end_task_and_drag_is_only_available_for_physical_mouse(window)
     window.task_method.setCurrentIndex(0)
     assert window.task_choice.currentData() == "click"
     # Direct invocation cannot bypass the visual disabled option either.
+    window.task_choice.blockSignals(True)
     window.task_choice.setCurrentIndex(1)
+    window.task_choice.blockSignals(False)
     window.start_practice()
     assert not window.practice.active
 

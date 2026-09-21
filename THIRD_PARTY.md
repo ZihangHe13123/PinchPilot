@@ -11,6 +11,8 @@ PinchPilot's Python application code is independently implemented for this cours
 | [Qt for Python](https://doc.qt.io/qtforpython-6/gettingstarted.html) | PySide6 desktop widgets. |
 | [PyObjC ApplicationServices](https://pyobjc.readthedocs.io/en/latest/apinotes/ApplicationServices.html) | macOS permissions and native framework access. |
 | [Win32 SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) | Windows mouse events, platform limitations and ABI. |
+| [Win32 MOUSEINPUT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-mouseinput) | Left/right button transition flags used by the native adapter; checked against official documentation. |
+| [Core Graphics CGEventType](https://developer.apple.com/documentation/coregraphics/cgeventtype) | Native mouse button and dragged-event types. |
 
 Dependencies are installed from their own distributions with their accompanying licenses. A wheel/source package of this project does not embed their binaries. Review their license files when preparing a bundled executable, especially Qt/PySide6 distribution requirements.
 
