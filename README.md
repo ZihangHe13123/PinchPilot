@@ -4,9 +4,11 @@
 
 当前实现用手掌移动定位，拇指与食指捏合点击、捏住移动拖拽，V 手势上下移动滚动。前臂支撑下的可用性、动作成本计量及更小动作的自训练识别仍需验证；详见 [新目标与研究设计](docs/superpowers/specs/2026-09-21-minimal-motion-design.md)。
 
-新增“只主动动一根食指”的两个 demo：**轻弯再恢复，主动点击**；**停住 0.8 秒，自动点击**。两者使用食指相对手掌的小幅移动定位，先在应用内比较，捏合仍是默认主方案。详见 [两个单指 Demo 的试用步骤](docs/SINGLE_FINGER_DEMOS.md)。
+**当前优先试用三指方案：拇指＋中指捏住定位，食指碰入点击。** 首要验证静止抗抖和点击带偏，提供抗抖参数与 8 秒静止记录。[三指 Demo 试用说明](docs/TRIPOD_DEMO.md)。旧单指方案因用户报告严重晃动、难用已暂时搁置，保留作对照；原捏合仍是默认完整功能基线。
 
-**当前原型版本为 v0.3.0。** 已实现两个单指点击 demo、小幅移动与休息后恢复、预览、手势状态机、Mac/Windows 系统接口、人工标签采集、个人阈值校准、Random Forest/SVM 训练、独立分组评测，以及点击/拖拽任务。单指仅支持应用内定位、点击、暂停，暂不接系统鼠标或原捏合训练集。尚无项目真人训练数据；ML 的准确率、误触率和舒适度尚未得到验证。
+**当前原型版本为 v0.4.0。** 新增三指定位点击、抗抖处理和显式静止诊断；已有小幅移动与休息后恢复、预览、手势状态机、Mac/Windows 系统接口、人工标签采集、个人阈值校准、Random Forest/SVM 训练、独立分组评测，以及点击/拖拽任务。三指与旧单指实验模式只支持应用内定位、点击、暂停，暂不接系统鼠标或原捏合训练集。尚无项目真人训练数据；新模式真实稳定性与舒适度仍待验证。
+
+试新模式：Mac 双击 **launch_tripod_mac.command**；Windows 双击 **launch_tripod_windows.cmd**。或执行 `uv run pinchpilot gui --interaction tripod`。入口只选择模式，不自动开相机。先启动摄像头，支撑前臂，拇中轻捏、食指移开；可先做 8 秒静止记录，再开始 8 目标点击。
 
 ## 立即启动
 
@@ -27,7 +29,9 @@ uv run pinchpilot gui
 
 Esc 停止系统控制并暂停手势；也可点击「停止全部」。丢手超过 0.2 秒会释放按键，恢复后需先张开手。首版限定单手、主屏，不包含右键、缩放、多屏、动态手势网络和完整鼠标替代功能。
 
-## 试用两个单指 Demo
+## 已暂搁置的单指 Demo
+
+用户实测反馈为抖动很大、难以使用，因此暂停此方向。以下入口仅保留用于复现对照，不再作为优先试用方案；历史工程检查不代表真人可用。
 
 先退出旧窗口，再双击 `launch_flex_mac.command` 试主动轻弯，或 `launch_dwell_mac.command` 试停留点击。Windows 使用对应的 `launch_flex_windows.cmd` / `launch_dwell_windows.cmd`。这些入口只选择模式，不自动打开相机。
 
@@ -129,6 +133,7 @@ uv run ruff check src tests
 uv run pytest -q
 uv run pinchpilot gui --demo --smoke-seconds 3
 uv run python scripts/check_single_finger.py
+uv run python scripts/check_tripod.py
 ```
 
 - [项目定位、课程要求与里程碑](docs/PROJECT_PLAN.md)
@@ -137,6 +142,7 @@ uv run python scripts/check_single_finger.py
 - [设计与模块边界](docs/superpowers/specs/2026-09-21-pinchpilot-design.md)
 - [小幅移动设计](docs/superpowers/specs/2026-09-21-small-motion-design.md)
 - [单指 Demo 操作与试用记录](docs/SINGLE_FINGER_DEMOS.md)
+- [三指定位点击与抗抖诊断](docs/TRIPOD_DEMO.md)
 - [少动作、小幅度的目标与指标](docs/superpowers/specs/2026-09-21-minimal-motion-design.md)
 - [参考与第三方组件](THIRD_PARTY.md)
 

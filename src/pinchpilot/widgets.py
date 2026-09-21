@@ -109,7 +109,14 @@ class CameraView(QWidget):
             for i, point in enumerate(points):
                 p.drawEllipse(point, 5 if i in (4, 8) else 3, 5 if i in (4, 8) else 3)
             p.setPen(QPen(QColor("#ffce83"), 3))
-            if self.result and self.result.mode != "pinch":
+            if self.result and self.result.mode == "tripod":
+                middle = (points[4] + points[12]) / 2
+                p.drawLine(points[4], points[12])
+                p.setPen(QPen(QColor("#ffce83"), 2, Qt.PenStyle.DashLine))
+                p.drawLine(points[8], middle)
+                p.setPen(QPen(QColor("#9eaebd"), 1))
+                p.drawEllipse(middle, 5, 5)
+            elif self.result and self.result.mode != "pinch":
                 for a, b in ((5, 6), (6, 7), (7, 8)):
                     p.drawLine(points[a], points[b])
             else:
@@ -128,7 +135,9 @@ class CameraView(QWidget):
             "合成动作演示 · 不代表识别效果"
             if self.demo
             else (
-                "镜像预览 · 食指相对掌部定位"
+                "拇中中点：灰色原始点 · 蓝绿色稳定点"
+                if self.result and self.result.mode == "tripod"
+                else "镜像预览 · 食指相对掌部定位"
                 if self.result and self.result.mode != "pinch"
                 else "镜像预览 · 虚线内映射至主屏"
             ),

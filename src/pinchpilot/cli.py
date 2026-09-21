@@ -18,9 +18,9 @@ def parser() -> argparse.ArgumentParser:
     gui.add_argument("--demo", action="store_true", help="合成动作演示，不接相机、不控制系统")
     gui.add_argument(
         "--interaction",
-        choices=("pinch", "finger-flex", "finger-dwell"),
+        choices=("pinch", "tripod", "finger-flex", "finger-dwell"),
         default="pinch",
-        help="捏合主方案 / 单指轻弯 / 单指停留（单指仅应用内）",
+        help="捏合主方案 / 三指定位点击 / 已搁置的单指对照（实验模式仅应用内）",
     )
     gui.add_argument("--smoke-seconds", type=float, help="在指定秒数后关闭，用于界面检查")
     gui.add_argument("--screenshot", type=Path, help="保存本程序窗口的截图")

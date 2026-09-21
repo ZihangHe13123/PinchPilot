@@ -46,6 +46,9 @@ class EngineResult:
     hint: str = ""
     mode: str = "pinch"
     bend: float | None = None
+    grip: float | None = None
+    contact: float | None = None
+    raw_pointer: tuple[float, float] | None = None
 
 
 @dataclass

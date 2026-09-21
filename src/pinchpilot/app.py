@@ -34,7 +34,11 @@ from .features import extract
 from .finger_controls import FingerControls
 from .platform_io import MouseOutput, camera_permission, enable_dpi_awareness, request_camera_access
 from .single_finger import SingleFingerEngine
+from .stability_probe import StabilityProbe
 from .storage import Recorder, calibrate, safe_name, save_json
+from .tripod import TripodEngine
+from .tripod_controls import TripodControls
+from .tripod_demo import tripod_demo_frame
 from .vision import CameraWorker, default_model_path, fetch_model
 from .widgets import CameraView, PracticeView
 
@@ -101,6 +105,8 @@ class MainWindow(QMainWindow):
             )
         )
         self.finger_engine = SingleFingerEngine()
+        self.tripod_engine = TripodEngine()
+        self.probe = None
         self.worker = None
         self.stopping_workers = []
         self.jobs = set()
@@ -150,7 +156,7 @@ class MainWindow(QMainWindow):
         names = QVBoxLayout()
         title = QLabel("PinchPilot")
         title.setObjectName("title")
-        subtitle = QLabel("小幅定位 · 主动点击 · 停留点击     /     摄像头交互研究原型")
+        subtitle = QLabel("稳定定位 · 三指主动点击     /     摄像头交互研究原型")
         subtitle.setObjectName("subtitle")
         names.addWidget(title)
         names.addWidget(subtitle)
@@ -214,8 +220,9 @@ class MainWindow(QMainWindow):
         controls, layout = self._group("01  输入与控制")
         self.interaction_choice = QComboBox()
         self.interaction_choice.addItem("捏合 · 当前主方案", "pinch")
-        self.interaction_choice.addItem("单指 · 轻弯点击 Demo", "finger-flex")
-        self.interaction_choice.addItem("单指 · 停留点击 Demo", "finger-dwell")
+        self.interaction_choice.addItem("三指 · 捏住定位＋食指点击", "tripod")
+        self.interaction_choice.addItem("单指 · 轻弯（暂搁置）", "finger-flex")
+        self.interaction_choice.addItem("单指 · 停留（暂搁置）", "finger-dwell")
         self.interaction_choice.currentIndexChanged.connect(self._change_interaction)
         layout.addWidget(self.interaction_choice)
         row = QHBoxLayout()
@@ -272,6 +279,12 @@ class MainWindow(QMainWindow):
         self.finger_controls.recenter.connect(self._recenter_finger)
         self.finger_controls.hide()
         layout.addWidget(self.finger_controls)
+        self.tripod_controls = TripodControls()
+        self.tripod_controls.changed.connect(self._change_finger_settings)
+        self.tripod_controls.recenter.connect(self._recenter_finger)
+        self.tripod_controls.probe.connect(self.start_probe)
+        self.tripod_controls.hide()
+        layout.addWidget(self.tripod_controls)
         helptext = QLabel(
             "首次启动可能请求相机权限。真实控制仅作用于主屏；录制与校准时自动回到预览。"
         )
@@ -377,29 +390,30 @@ class MainWindow(QMainWindow):
 
     @property
     def active_engine(self):
-        return self.engine if self.interaction_mode == "pinch" else self.finger_engine
+        if self.interaction_mode == "pinch":
+            return self.engine
+        return self.tripod_engine if self.interaction_mode == "tripod" else self.finger_engine
 
     @property
     def recognizer_name(self):
-        return (
-            self.recognizer.currentText() if self.interaction_mode == "pinch" else "单指规则 Demo"
-        )
+        if self.interaction_mode == "pinch":
+            return self.recognizer.currentText()
+        return "三指规则 Demo" if self.interaction_mode == "tripod" else "单指规则 Demo"
 
     def _refresh_interaction_controls(self):
         single = self.interaction_mode != "pinch"
         self.live_button.setEnabled(not single and self.source != "synthetic_demo")
-        self.live_button.setText("单指 Demo · 仅应用内" if single else "启用系统鼠标控制")
+        self.live_button.setText("实验模式 · 仅应用内" if single else "启用系统鼠标控制")
         for widget in self.pinch_controls:
             widget.setVisible(not single)
-        self.finger_controls.setVisible(single)
-        if single:
+        self.finger_controls.setVisible(self.interaction_mode in ("finger-flex", "finger-dwell"))
+        self.tripod_controls.setVisible(self.interaction_mode == "tripod")
+        if self.interaction_mode in ("finger-flex", "finger-dwell"):
             self.finger_controls.select_mode(self.interaction_mode)
         self.models_group.setEnabled(not single)
-        self.capture_group.setTitle(
-            "02  实验标识 · 单指暂不采集训练数据" if single else "02  采集与个人校准"
-        )
+        self.capture_group.setTitle("02  实验标识（实验模式）" if single else "02  采集与个人校准")
         self.input_help.setText(
-            "进入「点击与拖拽实验」开始点击任务。两种单指模式均不支持拖拽或滚动。"
+            "进入「点击与拖拽实验」开始点击任务。当前模式只提供定位、点击和暂停。"
             if single
             else "首次启动可能请求相机权限。真实控制仅作用于主屏；录制与校准时自动回到预览。"
         )
@@ -422,10 +436,13 @@ class MainWindow(QMainWindow):
             self.task_choice.setCurrentIndex(0)
 
     def _change_interaction(self, _=None):
+        self._finish_probe(cancelled=True)
         self._disable_live()
         self.finish_recording()
         self.practice.stop()
-        if self.interaction_mode != "pinch":
+        if self.interaction_mode == "tripod":
+            self.tripod_engine = TripodEngine(self.tripod_controls.configuration())
+        elif self.interaction_mode != "pinch":
             self.finger_engine = SingleFingerEngine(
                 self.finger_controls.configuration(self.interaction_mode)
             )
@@ -436,10 +453,11 @@ class MainWindow(QMainWindow):
         self.camera_view.box = self.active_engine.active_box
         self.camera_view.set_frame(None, None, None)
         self._dispatch(self.active_engine.reset())
+        self.metrics.setText(self.active_engine.reset().hint or "等待张开手")
         self.set_notice(
             "已切换到"
             + self.interaction_choice.currentText()
-            + "。单指请先支撑前臂，进入点击实验并开始 8 个目标；其余手指可自然放松。"
+            + "。先支撑前臂，再进入点击实验开始 8 个目标。"
             if self.interaction_mode != "pinch"
             else "已恢复捏合主方案。先张开手定位，再捏合点击。"
         )
@@ -447,22 +465,87 @@ class MainWindow(QMainWindow):
     def _change_finger_settings(self):
         if self.interaction_mode == "pinch":
             return
-        pointer = self.finger_engine.pointer
+        self._finish_probe(cancelled=True)
+        pointer = self.active_engine.pointer
         self._disable_live()
         self.practice.stop()
-        self.finger_engine = SingleFingerEngine(
-            self.finger_controls.configuration(self.interaction_mode)
-        )
-        self.finger_engine.pointer = pointer
-        self.finger_engine.set_enabled(not self.pause_button.isChecked())
-        self._dispatch(self.finger_engine.reset())
-        self.set_notice("单指参数已更新，本轮任务已结束。舒展食指重新定位后再开始一轮。")
+        if self.interaction_mode == "tripod":
+            self.tripod_engine = TripodEngine(self.tripod_controls.configuration())
+        else:
+            self.finger_engine = SingleFingerEngine(
+                self.finger_controls.configuration(self.interaction_mode)
+            )
+        self.active_engine.pointer = pointer
+        self.active_engine.set_enabled(not self.pause_button.isChecked())
+        self._dispatch(self.active_engine.reset())
+        self.set_notice("参数已更新，本轮任务已结束。按提示重新接管后再开始一轮。")
 
     def _recenter_finger(self):
-        self._dispatch(self.finger_engine.reset())
+        self._finish_probe(cancelled=True)
+        self._dispatch(self.active_engine.reset())
         if self.practice.active:
             self.practice.stop()
-        self.set_notice("指针留在原位。将手放到舒服的位置，舒展食指保持片刻；随后开始新一轮。")
+        self.set_notice("指针留在原位。将手放到舒服的位置，按提示重新接管；随后开始新一轮。")
+
+    def start_probe(self):
+        if self.probe is not None:
+            self._finish_probe(cancelled=True)
+            return
+        if (
+            self.interaction_mode != "tripod"
+            or self.source != "camera"
+            or time.monotonic() - self.last_packet_at > 0.25
+        ):
+            self.set_notice("静止记录需要三指模式与新鲜的真实相机帧；合成演示不作为真人记录。")
+            return
+        self._disable_live()
+        self.practice.stop()
+        self.pause_button.setChecked(False)
+        self.probe = StabilityProbe(
+            time.monotonic() + 2,
+            {
+                "source": "camera",
+                "app_version": __version__,
+                "participant": self.participant.text(),
+                "session": self.session.text(),
+                "config": asdict(self.tripod_engine.config),
+            },
+        )
+        self.set_notice(
+            "2 秒准备：支撑前臂，拇中捏住、食指移开，保持静止 8 秒。记录关键点计算结果，不保存视频。"
+        )
+
+    def _probe_tick(self, now):
+        if self.probe is None:
+            return
+        if now >= self.probe.starts_at + self.probe.duration:
+            self._finish_probe()
+        else:
+            wait = self.probe.starts_at - now
+            self.tripod_controls.probe_button.setText(
+                f"准备 {max(1, int(wait) + 1)} 秒 · 再点取消"
+                if wait > 0
+                else f"静止记录 {max(1, int(self.probe.starts_at + self.probe.duration - now) + 1)} 秒 · 再点取消"
+            )
+
+    def _finish_probe(self, cancelled=False):
+        if self.probe is None:
+            return
+        probe, self.probe = self.probe, None
+        self.tripod_controls.probe_button.setText("记录 8 秒静止抖动")
+        report = probe.report(time.monotonic(), cancelled)
+        path = self.report_dir / "jitter" / f"probe_{time.time_ns()}.json"
+        try:
+            save_json(path, report)
+            message = "已中断" if cancelled else "有效定位样本不足，请捏住并将食指移开后重试"
+            if report["sufficient"]:
+                message = (
+                    f"静止散布 RMS：原始 {report['raw']['rms_radius']:.2%} → "
+                    f"处理后 {report['output']['rms_radius']:.2%}（归一化坐标，非准确率）"
+                )
+            self.set_notice(f"{message}。记录：{path}")
+        except OSError as error:
+            self.set_notice(f"静止记录保存失败：{error}")
 
     @staticmethod
     def _group(title):
@@ -545,6 +628,8 @@ class MainWindow(QMainWindow):
             if self.interaction_mode == "pinch"
             else ("先支撑前臂，让手部保持可见；舒展食指片刻定位，再进入应用内点击实验。")
         )
+        if self.interaction_mode == "tripod":
+            hint = "支撑前臂，拇指与中指捏住接管；食指碰入点一次，移开再点。可先记录静止抖动。"
         self.set_notice(camera_permission() + "。" + hint)
 
     def start_demo(self):
@@ -557,6 +642,7 @@ class MainWindow(QMainWindow):
         )
 
     def _disable_live(self):
+        self._finish_probe(cancelled=True)
         if self.output is not None:
             try:
                 self.output.close()
@@ -570,10 +656,15 @@ class MainWindow(QMainWindow):
         self.chip.setText("预览模式 · 系统光标不受控")
         self.engine.reset()
         self.finger_engine.reset()
+        self.tripod_engine.reset()
         self.practice.cancel_press()
         if self.interaction_mode != "pinch":
-            self.live_button.setText("单指 Demo · 仅应用内")
-            self.chip.setText("单指 Demo · 应用内练习")
+            self.live_button.setText("实验模式 · 仅应用内")
+            self.chip.setText(
+                "三指 Demo · 应用内练习"
+                if self.interaction_mode == "tripod"
+                else "单指 Demo · 应用内练习"
+            )
 
     def _toggle_live(self, checked):
         if not checked:
@@ -581,7 +672,7 @@ class MainWindow(QMainWindow):
             return
         if self.interaction_mode != "pinch":
             self._disable_live()
-            self.set_notice("单指 Demo 仅用于应用内点击练习，暂不接管系统鼠标。")
+            self.set_notice("当前实验模式仅用于应用内点击练习，暂不接管系统鼠标。")
             return
         if self.source != "camera" or self.recorder or self.countdown or self.training_busy:
             self._disable_live()
@@ -604,6 +695,8 @@ class MainWindow(QMainWindow):
             self.set_notice(str(e))
 
     def _pause(self, checked):
+        if checked:
+            self._finish_probe(cancelled=True)
         result = self.active_engine.set_enabled(not checked)
         self._dispatch(result)
         self.pause_button.setText("恢复手势预览" if checked else "暂停手势 · 可用 Esc 停止控制")
@@ -652,6 +745,7 @@ class MainWindow(QMainWindow):
             self.set_notice("尚未加载模型，请先采集并训练。")
 
     def stop_all(self):
+        self._finish_probe(cancelled=True)
         self.source_generation += 1
         self._disable_live()
         self.finish_recording()
@@ -668,12 +762,13 @@ class MainWindow(QMainWindow):
         self.pause_button.setChecked(False)
         self.engine.set_enabled(True)
         self.finger_engine.set_enabled(True)
+        self.tripod_engine.set_enabled(True)
         self._dispatch(self.active_engine.reset())
 
     def _dispatch(self, result):
         if self.output and (self.interaction_mode != "pinch" or result.mode != "pinch"):
             self._disable_live()
-            self.set_notice("单指事件已阻止发送到系统鼠标。请在应用内练习。")
+            self.set_notice("实验模式事件已阻止发送到系统鼠标。请在应用内练习。")
             return
         self.practice.feed(result)
         for event in result.events:
@@ -708,6 +803,7 @@ class MainWindow(QMainWindow):
 
     def _tick(self):
         now = time.monotonic()
+        self._probe_tick(now)
         self.stopping_workers = [t for t in self.stopping_workers if t.is_alive()]
         if self.output:
             try:
@@ -722,11 +818,12 @@ class MainWindow(QMainWindow):
             self.stop_all()
             self.set_notice(failure + " " + camera_permission())
         if self.source == "synthetic_demo":
-            frame = (
-                demo_frame(now, now - self.demo_started)
-                if self.interaction_mode == "pinch"
-                else finger_demo_frame(now, now - self.demo_started, self.interaction_mode)
-            )
+            if self.interaction_mode == "pinch":
+                frame = demo_frame(now, now - self.demo_started)
+            elif self.interaction_mode == "tripod":
+                frame = tripod_demo_frame(now, now - self.demo_started)
+            else:
+                frame = finger_demo_frame(now, now - self.demo_started, self.interaction_mode)
             rgb, inference, fps = None, 0.0, 50.0
         elif packet:
             if now - packet.captured_at > 0.25:
@@ -753,15 +850,21 @@ class MainWindow(QMainWindow):
         result = (
             self.engine.process(frame, prediction)
             if self.interaction_mode == "pinch"
-            else self.finger_engine.process(frame)
+            else self.active_engine.process(frame)
         )
+        if self.probe is not None and self.source == "camera":
+            self.probe.add(frame.timestamp, result)
         self._dispatch(result)
         self.camera_view.box = self.active_engine.active_box
         self.camera_view.set_frame(rgb, frame, result, self.source == "synthetic_demo")
         ratio = f"{result.pinch:.3f}" if result.pinch is not None else "—"
         predicted = result.prediction.label if result.prediction else "未检测到手"
         detail = f"{result.state}    ·    {predicted}    ·    捏合比 {ratio}"
-        if self.interaction_mode != "pinch":
+        if self.interaction_mode == "tripod":
+            grip = f"{result.grip:.2f}" if result.grip is not None else "—"
+            contact = f"{result.contact:.2f}" if result.contact is not None else "—"
+            detail = f"{result.hint}\n拇中间距 {grip}    ·    食指间距 {contact}"
+        elif self.interaction_mode != "pinch":
             bend = f"{result.bend:.2f}" if result.bend is not None else "—"
             detail = f"{result.hint}\n{result.state}    ·    屈曲量（几何代理） {bend}"
         self.metrics.setText(
@@ -790,6 +893,7 @@ class MainWindow(QMainWindow):
             self.clutch_check,
             self.interaction_choice,
             self.finger_controls,
+            self.tripod_controls,
         ):
             widget.setEnabled(enabled)
         self.train_button.setEnabled(enabled and not self.training_busy)
@@ -797,7 +901,7 @@ class MainWindow(QMainWindow):
 
     def start_recording(self):
         if self.interaction_mode != "pinch":
-            self.set_notice("单指 Demo 的动作不能录入捏合四分类数据。点击任务结果会单独保存。")
+            self.set_notice("实验模式的动作不能录入捏合四分类数据。点击任务结果会单独保存。")
             return
         if self.training_busy:
             self.set_notice("请先等待训练结束，避免录制文件在训练读取时发生变化。")
@@ -967,6 +1071,7 @@ class MainWindow(QMainWindow):
             self.set_notice(f"模型加载失败：{e}")
 
     def start_practice(self):
+        self._finish_probe(cancelled=True)
         self._disable_live()
         virtual = self.task_method.currentData()
         if virtual and self.source == "none":
@@ -977,7 +1082,7 @@ class MainWindow(QMainWindow):
             and self.interaction_mode != "pinch"
             and self.task_choice.currentData() != "click"
         ):
-            self.set_notice("单指 Demo 当前只支持点击目标。")
+            self.set_notice("当前实验模式只支持点击目标。")
             return
         if virtual:
             self.active_engine.pointer = (0.5, 0.5)
