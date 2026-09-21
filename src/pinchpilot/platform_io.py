@@ -120,14 +120,14 @@ class MouseOutput:
             min(1.0, max(0.0, (y - top) / max(height - 1, 1))),
         )
 
-    def emit(self, event: InputEvent) -> None:
+    def emit(self, event: InputEvent) -> bool | None:
         left, top, width, height = self.bounds
         x, y = left + event.x * (width - 1), top + event.y * (height - 1)
         if event.kind == "scroll":
             self.scroll_remainder += event.value
             lines = int(self.scroll_remainder)
             if not lines:
-                return
+                return False
             self.scroll_remainder -= lines
             if sys.platform == "darwin":
                 obj = self.q.CGEventCreateScrollWheelEvent(

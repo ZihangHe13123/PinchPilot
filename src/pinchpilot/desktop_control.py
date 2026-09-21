@@ -62,9 +62,11 @@ class DesktopController:
         counts = Counter(current["sent"])
         delta = counts - self.sent_seen
         self.metrics.sent.update(delta)
-        buttons = {k: v for k, v in delta.items() if k != "move"}
+        buttons = {k: v for k, v in delta.items() if k not in ("move", "scroll")}
         if buttons:
             self.metrics.record("native_buttons", counts=buttons)
+        if delta.get("scroll"):
+            self.metrics.record("native_scroll", count=delta["scroll"])
         self.sent_seen = counts
         if not current["active"] and self.stop_seen != current["reason"]:
             self.stop_seen = current["reason"]

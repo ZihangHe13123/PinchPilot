@@ -7,8 +7,9 @@ from unittest.mock import Mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QEventLoop, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionSlider
 from test_desktop_control import FakeMouse, Rig
 
 from pinchpilot import desktop
@@ -55,6 +56,7 @@ def test_controls_persist_only_preferences_and_restart_requires_explicit_enable(
     window.right.setChecked(False)
     assert not window.rig.output.down and not window.controller.active
     window.drag.setChecked(False)
+    window.scroll.setChecked(False)
     window.preview.setChecked(False)
     window.logging.setChecked(False)
     window.tripod_controls.stability.setCurrentIndex(2)
@@ -65,6 +67,7 @@ def test_controls_persist_only_preferences_and_restart_requires_explicit_enable(
     try:
         second.timer.stop()
         assert not second.right.isChecked() and not second.drag.isChecked()
+        assert not second.scroll.isChecked() and not second.controller.engine.config.scroll_enabled
         assert not second.preview.isChecked() and second.camera_view.isHidden()
         assert second.controller.metrics.file is None
         assert second.controller.engine.config.deadband == 0.014
@@ -85,6 +88,79 @@ def test_settings_invalid_values_do_not_restore_control(application, tmp_path):
         assert win.camera_index.value() == 0 and not win.controller.active
     finally:
         win.close()
+
+
+@pytest.mark.parametrize("span,percent", [(0.2, 150), (0.3, 100), (0.4, 75), (1.2, 25), (3.0, 10)])
+def test_sensitivity_restores_old_and_continuous_settings(application, tmp_path, span, percent):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "desktop-settings.json").write_text(json.dumps({"span": span, "stability": 0.014}))
+    win = desktop.DesktopWindow(tmp_path)
+    try:
+        win.timer.stop()
+        assert win.tripod_controls.sensitivity.value() == percent
+        assert win.controller.engine.config.span == pytest.approx(span)
+        assert win.controller.engine.config.deadband == 0.014
+        win.tripod_controls.sensitivity.setValue(42)
+        saved = json.loads(win.settings_path.read_text())
+        assert saved["span"] == pytest.approx(0.3 / 0.42)
+        win.tripod_controls.restore_span(saved["span"])
+        assert win.tripod_controls.sensitivity.value() == 42
+        win.tripod_controls.reset_sensitivity.click()
+        assert win.controller.engine.config.span == 0.3
+    finally:
+        win.close()
+
+
+def test_slider_drag_previews_then_commits_and_releases_on_mouse_up(window, application):
+    window.advanced_button.setChecked(True)
+    window.show()
+    application.processEvents()
+    slider = window.tripod_controls.sensitivity
+    option = QStyleOptionSlider()
+    slider.initStyleOption(option)
+    handle = slider.style().subControlRect(
+        QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider
+    )
+    start = handle.center()
+    end = QPoint(max(12, start.x() - slider.width() // 3), start.y())
+    window.rig.live()
+    window.rig.frames(18, contact=0.1)
+    assert window.rig.output.down
+    QTest.mousePress(slider, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(slider, end)
+    assert slider.sliderPosition() < 75  # Slower than the old slowest setting.
+    assert slider.value() == 100 and window.controller.active
+    assert window.tripod_controls.sensitivity_value.text() != "1.00×"
+    QTest.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=end)
+    assert slider.value() < 75 and not window.controller.active
+    assert not window.rig.output.down
+    assert window.controller.engine.config.span > 0.4
+
+
+def test_scroll_reaches_output_metrics_and_settings_switch_stops_it(window):
+    from pinchpilot.demo import synthetic_hand
+
+    rig = window.rig
+    rig.live()
+    for i in range(70):
+        rig.clock.now += 1 / 30
+        frame = synthetic_hand(rig.clock.now, "scroll", y=0.5 - max(0, i - 12) * 0.0015)
+        window.controller.consume(Packet(None, frame, 8.0, 30.0, frame.timestamp))
+        window.controller.tick()
+    assert window.controller.result.state == "SCROLL"
+    wheel = [e for e in rig.output.events if e.kind == "scroll"]
+    assert wheel and all(e.value > 0 for e in wheel)
+    window._refresh()
+    assert f"滚 {len(wheel)}" in window.metrics_labels["duration"].text()
+    assert "SCROLL" in window.gesture.text()
+    window.tripod_controls.scroll_speed.setCurrentIndex(0)
+    assert not window.controller.active
+    assert window.controller.engine.config.scroll_gain == 30
+    window.scroll.setChecked(False)
+    assert not window.controller.engine.config.scroll_enabled
+    saved = json.loads(window.settings_path.read_text())
+    assert saved["scroll"] is False and saved["scroll_speed"] == 30
 
 
 def test_camera_permission_and_download_callbacks_cannot_restart_after_stop(

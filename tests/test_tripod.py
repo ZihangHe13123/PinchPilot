@@ -323,6 +323,7 @@ def test_generated_rest_noise_is_reduced_and_motion_remains_responsive():
     "change",
     [
         dict(span=0),
+        dict(span=3.01),
         dict(deadband=float("nan")),
         dict(touch_ratio=0.6),
         dict(grip_release=0.1),
@@ -331,11 +332,29 @@ def test_generated_rest_noise_is_reduced_and_motion_remains_responsive():
         dict(drag_hold_seconds=0),
         dict(right_touch_ratio=0.5),
         dict(right_confirm_seconds=float("nan")),
+        dict(scroll_gain=0),
+        dict(scroll_confirm_seconds=0),
+        dict(scroll_activation_distance=0),
+        dict(scroll_deadband=-0.1),
     ],
 )
 def test_invalid_config_rejected(change):
     with pytest.raises(ValueError):
         TripodEngine(replace(TripodConfig(), **change))
+
+
+def test_slower_sensitivity_reduces_pointer_motion_below_the_old_slowest_setting():
+    endpoints = []
+    for gain in (0.1, 0.25, 0.75, 1.0, 2.0):
+        s = Sequence(replace(TripodConfig(), span=0.3 / gain))
+        s.frames(10)
+        for x in np.linspace(0.5, 0.53, 15):
+            s.frames(x=x)
+        s.frames(30, x=0.53)
+        assert s.result.raw_pointer[0] - 0.5 == pytest.approx(0.1 * gain)
+        endpoints.append(s.engine.pointer[0])
+    assert endpoints == sorted(endpoints)
+    assert endpoints[1] - 0.5 < (endpoints[2] - 0.5) / 2
 
 
 def test_missing_degenerate_landmarks_and_tick_are_safe():

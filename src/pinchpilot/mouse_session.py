@@ -56,8 +56,8 @@ class MouseSession:
                 return
             try:
                 for event in events:
-                    self.output.emit(event)
-                    self.sent[event.kind] += 1
+                    if self.output.emit(event) is not False:
+                        self.sent[event.kind] += 1
             except Exception as error:
                 self.stop("output_error", str(error))
 

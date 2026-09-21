@@ -7,6 +7,7 @@ import pytest
 
 from pinchpilot import platform_io
 from pinchpilot.domain import InputEvent
+from pinchpilot.mouse_session import MouseSession
 
 
 @pytest.fixture
@@ -56,6 +57,19 @@ def test_windows_rejected_input_never_sets_down(windows):
     assert not output.down
 
 
+def test_fractional_scroll_counts_only_native_sends(windows):
+    output, _, calls = windows
+    session = MouseSession(output, background=False)
+    session.emit([InputEvent("scroll", value=0.25)] * 3)
+    assert not calls and session.snapshot()["sent"] == {}
+    session.emit([InputEvent("scroll", value=0.35)])
+    assert calls[-1][0:2] == (0x0800, 120)
+    session.emit([InputEvent("scroll", value=-1.5)])
+    assert calls[-1][0:2] == (0x0800, -120 & 0xFFFFFFFF)
+    assert session.snapshot()["sent"]["scroll"] == 2
+    session.stop("test_done")
+
+
 @pytest.mark.parametrize(
     "position,expected", [((960, 540), (960 / 1919, 540 / 1079)), ((-50, 2000), (0, 1))]
 )
@@ -88,6 +102,7 @@ def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
         ),
         CGMainDisplayID=lambda: 1,
         CGEventCreateMouseEvent=Mock(return_value="event"),
+        CGEventCreateScrollWheelEvent=Mock(return_value="scroll-event"),
         CGEventPost=Mock(),
         CGEventCreate=lambda _: "read-event",
         CGEventGetLocation=lambda _: (50, 60),
@@ -101,6 +116,7 @@ def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
         kCGMouseButtonLeft=0,
         kCGMouseButtonRight=1,
         kCGHIDEventTap=0,
+        kCGScrollEventUnitLine=1,
     )
     monkeypatch.setitem(sys.modules, "Quartz", q)
     trust = SimpleNamespace(AXIsProcessTrusted=lambda: False)
@@ -126,6 +142,14 @@ def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
     output.close()
     assert q.CGEventCreateMouseEvent.call_args.args[1:] == (4, (50, 60), 1)
     assert not output.right_down
+    q.CGEventPost.reset_mock()
+    assert output.emit(InputEvent("scroll", value=0.4)) is False
+    q.CGEventPost.assert_not_called()
+    output.emit(InputEvent("scroll", value=0.7))
+    q.CGEventCreateScrollWheelEvent.assert_called_with(None, 1, 1, 1)
+    q.CGEventPost.assert_called_once_with(0, "scroll-event")
+    output.emit(InputEvent("scroll", value=-1.2))
+    q.CGEventCreateScrollWheelEvent.assert_called_with(None, 1, 1, -1)
 
 
 def test_windows_right_button_is_separate_and_close_releases_both_once(windows):

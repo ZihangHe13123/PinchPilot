@@ -26,8 +26,11 @@ def synthetic_tripod(
 
 
 def tripod_demo_frame(timestamp, elapsed):
-    phase = elapsed % 12
-    if phase >= 10.5:
+    phase = elapsed % 16
+    if 10.5 <= phase < 14.5:
+        y = 0.5 + 0.075 * math.sin(max(0, phase - 10.9) * 2)
+        return synthetic_hand(timestamp, "scroll", y=y)
+    if phase >= 14.5:
         return synthetic_tripod(timestamp, grip=False)
     x = 0.5 + 0.075 * math.sin(max(0, elapsed - 0.6) * 0.7)
     y = 0.38 + 0.045 * math.sin(max(0, elapsed - 0.6) * 1.1)

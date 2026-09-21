@@ -136,10 +136,11 @@ class DesktopWindow(QMainWindow):
             controls.addWidget(button)
         self.right = QCheckBox("启用右键 · 拇指＋无名指")
         self.drag = QCheckBox("启用拖拽 · 食拇保持捏合")
+        self.scroll = QCheckBox("启用滚轮 · V 手势上下移动")
         self.preview = QCheckBox("显示相机预览")
         self.on_top = QCheckBox("窗口置顶")
         self.logging = QCheckBox("保存本地测试记录")
-        for option in (self.right, self.drag, self.preview, self.on_top, self.logging):
+        for option in (self.right, self.drag, self.scroll, self.preview, self.on_top, self.logging):
             option.setChecked(option is not self.on_top)
             controls.addWidget(option)
         privacy = QLabel("记录性能、状态和按钮事件；不保存相机图像。")
@@ -189,7 +190,7 @@ class DesktopWindow(QMainWindow):
     def _choices(self):
         return {
             name: getattr(self.tripod_controls, name)
-            for name in ("span", "stability", "contact", "right_contact", "drag_hold")
+            for name in ("stability", "contact", "right_contact", "drag_hold", "scroll_speed")
         }
 
     def _restore_settings(self):
@@ -199,7 +200,7 @@ class DesktopWindow(QMainWindow):
             settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
             if not isinstance(settings, dict):
                 raise ValueError("settings must be an object")
-            for name in ("right", "drag", "preview", "on_top", "logging"):
+            for name in ("right", "drag", "scroll", "preview", "on_top", "logging"):
                 value = settings.get(name)
                 if isinstance(value, bool):
                     getattr(self, name).setChecked(value)
@@ -207,6 +208,7 @@ class DesktopWindow(QMainWindow):
                 index = choice.findData(settings.get(name))
                 if index >= 0:
                     choice.setCurrentIndex(index)
+            self.tripod_controls.restore_span(settings.get("span", 0.3))
             index = settings.get("camera_index", 0)
             if type(index) is int and 0 <= index <= 8:
                 self.camera_index.setValue(index)
@@ -218,9 +220,10 @@ class DesktopWindow(QMainWindow):
     def _save_settings(self):
         settings = {
             name: getattr(self, name).isChecked()
-            for name in ("right", "drag", "preview", "on_top", "logging")
+            for name in ("right", "drag", "scroll", "preview", "on_top", "logging")
         }
         settings.update({name: choice.currentData() for name, choice in self._choices().items()})
+        settings["span"] = self.tripod_controls.configuration().span
         settings["camera_index"] = self.camera_index.value()
         try:
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,6 +236,7 @@ class DesktopWindow(QMainWindow):
     def _connect_settings(self):
         self.right.toggled.connect(self._configure)
         self.drag.toggled.connect(self._configure)
+        self.scroll.toggled.connect(self._configure)
         self.tripod_controls.changed.connect(self._configure)
         self.tripod_controls.recenter.connect(self.stop_control)
         self.camera_index.valueChanged.connect(self._camera_changed)
@@ -246,6 +250,7 @@ class DesktopWindow(QMainWindow):
                 self.tripod_controls.configuration(),
                 right_enabled=self.right.isChecked(),
                 drag_enabled=self.drag.isChecked(),
+                scroll_enabled=self.scroll.isChecked(),
             )
         )
         self._save_settings()
@@ -444,7 +449,7 @@ class DesktopWindow(QMainWindow):
             "age": "读帧后帧龄\n" + ("—" if age is None or synthetic else f"{age:.0f} ms"),
             "tracking": f"{'合成手部' if synthetic else '手部跟踪'}\n{'可见' if data['tracked'] else '未跟踪'} · 丢失 {data['tracking_losses']}",
             "buttons": f"按下 / 拖拽就绪\n左 {data['sent'].get('down', 0)} · 右 {data['sent'].get('right_down', 0)} · 拖 {data['drag_starts']}",
-            "duration": f"本次运行\n{int(data['elapsed_s']) // 60:02d}:{int(data['elapsed_s']) % 60:02d}",
+            "duration": f"本次运行 / 滚轮发送\n{int(data['elapsed_s']) // 60:02d}:{int(data['elapsed_s']) % 60:02d} · 滚 {data['sent'].get('scroll', 0)}",
         }
         for key, value in values.items():
             self.metrics_labels[key].setText(value)

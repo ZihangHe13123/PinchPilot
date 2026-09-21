@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from .domain import EngineResult, HandFrame, InputEvent, Prediction
+from .features import extract
 from .filtering import StablePointer
 
 
@@ -30,17 +31,25 @@ class TripodConfig:
     right_confirm_seconds: float = 0.10
     right_enabled: bool = True
     drag_enabled: bool = True
+    scroll_enabled: bool = True
+    scroll_gain: float = 60.0
+    scroll_confirm_seconds: float = 0.18
+    scroll_activation_distance: float = 0.015
+    scroll_deadband: float = 0.004
     tracking_timeout: float = 0.20
     max_jump: float = 0.10
 
     def validate(self):
-        if not isinstance(self.right_enabled, bool) or not isinstance(self.drag_enabled, bool):
-            raise ValueError("右键和拖拽开关必须为布尔值")
+        if not all(
+            isinstance(v, bool)
+            for v in (self.right_enabled, self.drag_enabled, self.scroll_enabled)
+        ):
+            raise ValueError("右键、拖拽和滚轮开关必须为布尔值")
         if self.mode != "tripod" or not all(
             math.isfinite(v) for k, v in vars(self).items() if k != "mode"
         ):
             raise ValueError("三指配置无效")
-        if not 0.15 <= self.span <= 0.60 or not 0 <= self.deadband <= 0.03:
+        if not 0.15 <= self.span <= 3.0 or not 0 <= self.deadband <= 0.03:
             raise ValueError("三指移动范围或抗抖强度无效")
         if not 0.5 <= self.filter_cutoff <= 10 or not 0 <= self.filter_beta <= 20:
             raise ValueError("三指滤波参数无效")
@@ -62,6 +71,13 @@ class TripodConfig:
             raise ValueError("右键触碰阈值无效")
         if not 0.06 <= self.right_confirm_seconds <= 0.3:
             raise ValueError("右键确认时长无效")
+        if not 1 <= self.scroll_gain <= 180 or not 0.10 <= self.scroll_confirm_seconds <= 0.5:
+            raise ValueError("滚动速度或确认时间无效")
+        if (
+            not 0.005 <= self.scroll_activation_distance <= 0.1
+            or not 0 <= self.scroll_deadband <= 0.03
+        ):
+            raise ValueError("滚动启用位移或抗抖参数无效")
         if not 0.1 <= self.tracking_timeout <= 0.5 or not 0.04 <= self.max_jump <= 0.3:
             raise ValueError("三指追踪中断配置无效")
 
@@ -74,6 +90,7 @@ class TripodFeatures:
     grip: float
     contact: float
     right_contact: float
+    scroll_pose: bool = False
 
 
 def tripod_features(frame: HandFrame) -> TripodFeatures | None:
@@ -92,6 +109,7 @@ def tripod_features(frame: HandFrame) -> TripodFeatures | None:
     # Middle finger gates movement only. Contact is a thumb-index distance
     # proxy with estimated depth, not a physical contact/pressure sensor.
     contact = float(np.linalg.norm(xyz[8] - xyz[4]) / scale)
+    pose = extract(frame)
     return TripodFeatures(
         tuple((p[4, :2] + p[12, :2]) / 2),
         tuple(p[[0, 5, 9, 13, 17], :2].mean(axis=0)),
@@ -99,6 +117,7 @@ def tripod_features(frame: HandFrame) -> TripodFeatures | None:
         grip,
         contact,
         float(np.linalg.norm(xyz[16] - xyz[4]) / scale),
+        bool(pose and pose.scroll_pose),
     )
 
 
@@ -129,6 +148,8 @@ class TripodEngine:
         self.require_both_clear = False
         self.arm_since = self.touch_since = self.clear_since = None
         self.stabilizer = None
+        self.scroll_since = self.scroll_anchor = self.scroll_y = None
+        self.scroll_filter = None
         return self._result(events, cancelled=cancelled)
 
     def set_enabled(self, enabled):
@@ -174,6 +195,7 @@ class TripodEngine:
                 if self.motion_engaged
                 else "拖拽位置锁住 · 捏中指可继续拖 · 松食指放下"
             ),
+            "SCROLL": "V 手势滚动 · 拇指保持分开 · 上移向上翻、下移向下翻 · 收指停止",
             "RIGHT_APPROACH": "无名指接近拇指 · 位置已冻结 · 食指保持分开",
             "RIGHT_TOUCHED": "右键已触发 · 松开无名指后可继续操作",
             "WAIT_CLEAR": (
@@ -183,6 +205,12 @@ class TripodEngine:
             ),
             "PAUSED": "已暂停 · 恢复后重新捏住拇中",
         }
+        if self.scroll_since is not None and self.state in ("WAIT_GRIP", "CONTROL", "FROZEN"):
+            hints[self.state] = (
+                "V 手势已准备 · 上下轻移滚动；捏中指可接管指针"
+                if self.state == "WAIT_GRIP"
+                else "V 手势已准备 · 上下轻移滚动；静止不翻页，仍可捏合点击"
+            )
         f = self.features
         self.last_result = EngineResult(
             self.state,
@@ -258,6 +286,56 @@ class TripodEngine:
                 self.right_ready = True
         else:
             self.right_clear_since = None
+
+    def _scroll(self, f, frame):
+        cfg = self.config
+        pose = (
+            cfg.scroll_enabled
+            and not self.left_down
+            and f.scroll_pose
+            and f.grip > cfg.grip_release
+            and f.contact >= cfg.clear_ratio
+            and f.right_contact >= cfg.right_clear_ratio
+        )
+        if self.state == "SCROLL":
+            if not pose:
+                return self._disarm(f, frame, "滚动已停止 · 食指移开，重新捏中指接管")
+            y = self.scroll_filter.update(f.palm, frame.timestamp)[1]
+            delta = (self.scroll_y - y) * cfg.scroll_gain
+            self.scroll_y = y
+            events = (
+                [InputEvent("scroll", value=max(-3.0, min(3.0, delta)))]
+                if abs(delta) > 1e-6
+                else []
+            )
+            return self._result(events)
+        if not pose or self.state not in ("WAIT_GRIP", "CONTROL", "FROZEN"):
+            self.scroll_since = self.scroll_anchor = None
+            self.scroll_filter = None
+            return None
+        if self.scroll_since is None:
+            self.scroll_since = frame.timestamp
+            self.scroll_filter = StablePointer(
+                cfg.scroll_deadband, cfg.filter_cutoff, cfg.filter_beta
+            )
+            self.scroll_anchor = self.scroll_filter.update(f.palm, frame.timestamp)[1]
+            y = self.scroll_anchor
+        else:
+            y = self.scroll_filter.update(f.palm, frame.timestamp)[1]
+        if (
+            frame.timestamp - self.scroll_since >= cfg.scroll_confirm_seconds
+            and abs(y - self.scroll_anchor) >= cfg.scroll_activation_distance
+        ):
+            # Static V must not steal frozen-position clicks. Commit only after deliberate
+            # vertical motion, and discard the pose-forming/activation part of the stroke.
+            self.state = "SCROLL"
+            self.motion_engaged = self.right_ready = False
+            self.raw_pointer = None
+            self.pointer = self.pointer or (0.5, 0.5)
+            self.arm_since = self.touch_since = self.clear_since = None
+            self.scroll_y = y
+            return self._result()
+        return None
 
     def _pressed(self, f, timestamp):
         cfg = self.config
@@ -346,6 +424,9 @@ class TripodEngine:
         self.last_time = self.last_seen = t
         self.features, self.last_hand = f, frame.handedness
         cfg = self.config
+        scrolling = self._scroll(f, frame)
+        if scrolling is not None:
+            return scrolling
         right_near = (
             cfg.right_enabled and self.right_ready and f.right_contact <= cfg.right_hover_ratio
         )
