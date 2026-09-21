@@ -76,6 +76,8 @@ class CameraView(QWidget):
                     QPointF(area.right(), area.top() + i * h / 10),
                 )
         left, top, right, bottom = self.box
+        p.save()
+        p.setClipRect(area)
         p.setPen(QPen(QColor("#73b6c7"), 1, Qt.PenStyle.DashLine))
         p.drawRoundedRect(
             QRectF(
@@ -84,6 +86,7 @@ class CameraView(QWidget):
             12,
             12,
         )
+        p.restore()
         if self.frame and self.frame.landmarks:
             points = [
                 QPointF(area.left() + x * w, area.top() + y * h) for x, y, _ in self.frame.landmarks
@@ -118,6 +121,7 @@ class CameraView(QWidget):
             p.setBrush(
                 QColor("#edac55") if self.result.state in ("PRESSED", "DRAG") else QColor("#087e83")
             )
+            p.setClipRect(area)
             p.drawEllipse(point, 10, 10)
         p.end()
 

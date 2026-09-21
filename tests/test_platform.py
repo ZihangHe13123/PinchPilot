@@ -15,6 +15,7 @@ def windows(monkeypatch):
     user32 = SimpleNamespace(
         GetSystemMetrics=lambda n: [1920, 1080][n],
         SetCursorPos=Mock(return_value=1),
+        GetCursorPos=Mock(return_value=1),
         SendInput=Mock(return_value=1),
         GetAsyncKeyState=lambda _: 0,
     )
@@ -55,6 +56,31 @@ def test_windows_rejected_input_never_sets_down(windows):
     assert not output.down
 
 
+@pytest.mark.parametrize(
+    "position,expected", [((960, 540), (960 / 1919, 540 / 1079)), ((-50, 2000), (0, 1))]
+)
+def test_windows_cursor_read_is_normalized_clamped_and_never_emits(windows, position, expected):
+    output, native, calls = windows
+
+    def read(pointer):
+        point = ctypes.cast(pointer, native.GetCursorPos.argtypes[0]).contents
+        point.x, point.y = position
+        return 1
+
+    native.GetCursorPos.side_effect = read
+    assert output.position() == pytest.approx(expected)
+    native.SetCursorPos.assert_not_called()
+    assert calls == []
+
+
+def test_windows_cursor_read_failure_is_reported(windows):
+    output, native, calls = windows
+    native.GetCursorPos.return_value = 0
+    with pytest.raises(OSError):
+        output.position()
+    assert calls == []
+
+
 def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
     q = SimpleNamespace(
         CGDisplayBounds=lambda _: SimpleNamespace(
@@ -81,6 +107,8 @@ def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
     q.CGEventPost.assert_not_called()
     trust.AXIsProcessTrusted = lambda: True
     output = platform_io.MouseOutput()
+    assert output.position() == pytest.approx((50 / 1439, 60 / 899))
+    q.CGEventPost.assert_not_called()
     output.emit(InputEvent("down", 0.5, 0.5))
     output.emit(InputEvent("move", 0.6, 0.5))
     assert q.CGEventCreateMouseEvent.call_args.args[1] == 6

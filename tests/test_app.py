@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -9,7 +10,8 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from pinchpilot import app as app_module
-from pinchpilot.domain import EngineResult, InputEvent
+from pinchpilot.demo import synthetic_hand
+from pinchpilot.domain import EngineConfig, EngineResult, InputEvent
 from pinchpilot.widgets import PracticeView
 
 
@@ -121,3 +123,72 @@ def test_camera_permission_denial_is_recoverable(window, monkeypatch, applicatio
     application.processEvents()
     assert not window.permission_pending and window.worker is None
     assert "未获准" in window.notice.text()
+
+
+def test_motion_selection_releases_output_stops_trial_and_preserves_thresholds(window):
+    from unittest.mock import Mock
+
+    assert window.engine.config.reanchor_on_open
+    assert window.engine.active_box == pytest.approx((0.35, 0.35, 0.65, 0.65))
+    window.engine.config.engage_ratio = 0.30
+    window.engine.pointer = (0.31, 0.47)
+    window.start_practice()
+    old = window.output = Mock()
+    window.motion_range.setCurrentIndex(1)
+    old.close.assert_called_once()
+    assert window.output is None and not window.practice.active
+    assert window.engine.state == "WAIT_OPEN"
+    assert window.engine.config.engage_ratio == 0.30
+    assert window.engine.active_box == pytest.approx((0.4, 0.4, 0.6, 0.6))
+    rows = [json.loads(line) for line in window.practice.path.read_text().splitlines()]
+    assert rows[0]["config"]["reanchor_on_open"]
+    assert rows[0]["initial_pointer"] == [0.5, 0.5]
+    assert rows[-1]["completed"] is False
+
+
+def test_profile_changes_do_not_overwrite_movement_preferences(window):
+    window.motion_range.setCurrentIndex(1)
+    window.clutch_check.setChecked(False)
+    path = window.workspace / "data" / "profiles" / f"{window.participant.text()}.json"
+    path.parent.mkdir(parents=True)
+    old_config = asdict(EngineConfig(engage_ratio=0.29, release_ratio=0.45))
+    old_config.pop("reanchor_on_open")  # A v0.1 profile has no clutch setting.
+    path.write_text(json.dumps({"participant": "P01", "config": old_config}))
+    window.load_profile()
+    assert window.engine.config.engage_ratio == 0.29
+    for change in (lambda: None, window.reset_profile):
+        change()
+        assert window.engine.active_box == pytest.approx((0.4, 0.4, 0.6, 0.6))
+        assert not window.engine.config.reanchor_on_open
+    assert window.engine.config.engage_ratio == EngineConfig().engage_ratio
+
+
+def test_enabling_native_output_anchors_to_actual_cursor_without_move(window, monkeypatch):
+    from unittest.mock import Mock
+
+    native = Mock()
+    native.position.return_value = (0.18, 0.76)
+    monkeypatch.setattr(app_module, "MouseOutput", lambda: native)
+    window.source = "camera"
+    window.last_packet_at = time.monotonic()
+    window._toggle_live(True)
+    native.position.assert_called_once()
+    native.emit.assert_not_called()
+    assert window.engine.pointer == (0.18, 0.76)
+    events = []
+    for i in range(12):
+        events.extend(window.engine.process(synthetic_hand(100 + i / 30, x=0.65)).events)
+    assert events and all((e.x, e.y) == pytest.approx((0.18, 0.76)) for e in events)
+
+
+def test_recording_blocks_movement_changes_and_event_log_identifies_mode(window):
+    window.source = "camera"
+    window.current_frame = synthetic_hand(time.monotonic())
+    window.start_recording()
+    assert not window.motion_range.isEnabled() and not window.clutch_check.isEnabled()
+    window.finish_recording()
+    assert window.motion_range.isEnabled() and window.clutch_check.isEnabled()
+    window._dispatch(EngineResult("PRESSED", (0.5, 0.5), [InputEvent("down", 0.5, 0.5)]))
+    row = json.loads(Path(window.event_file.name).read_text().splitlines()[-1])
+    assert row["config"]["reanchor_on_open"]
+    assert row["config"]["box_left"] == 0.35

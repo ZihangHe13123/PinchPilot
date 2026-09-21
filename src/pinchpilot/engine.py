@@ -26,6 +26,22 @@ class GestureEngine:
         self.pending = None
         self.pending_since = None
         self.filters = [AdaptiveFilter(), AdaptiveFilter()]
+        self.mapping_offset = (0.0, 0.0)
+
+    @property
+    def active_box(self) -> tuple[float, float, float, float]:
+        """Camera coordinates mapping to screen bounds after any re-anchoring."""
+        cfg = self.config
+        dx = self.mapping_offset[0] * (cfg.box_right - cfg.box_left)
+        dy = self.mapping_offset[1] * (cfg.box_bottom - cfg.box_top)
+        return (cfg.box_left - dx, cfg.box_top - dy, cfg.box_right - dx, cfg.box_bottom - dy)
+
+    def _reanchor(self, base: tuple[float, float], timestamp: float) -> tuple[float, float]:
+        target = self.pointer if self.pointer is not None else (0.5, 0.5)
+        self.mapping_offset = tuple(a - b for a, b in zip(target, base))
+        # The resting hand may have moved far away; discard that filter history.
+        self.filters = [AdaptiveFilter(), AdaptiveFilter()]
+        return tuple(f.update(v, timestamp) for f, v in zip(self.filters, target))
 
     def _release(self) -> list[InputEvent]:
         events = []
@@ -45,6 +61,7 @@ class GestureEngine:
         self.last_hand = ""
         self.raw_pointer = None
         self.filters = [AdaptiveFilter(), AdaptiveFilter()]
+        self.mapping_offset = (0.0, 0.0)
         return EngineResult(self.state, self.pointer, events)
 
     def set_enabled(self, enabled: bool) -> EngineResult:
@@ -99,10 +116,11 @@ class GestureEngine:
             self.filters = [AdaptiveFilter(), AdaptiveFilter()]
         self.last_hand, self.raw_pointer, self.last_seen = frame.handedness, f.pointer, t
         cfg = self.config
-        p = (
+        base = (
             (f.pointer[0] - cfg.box_left) / (cfg.box_right - cfg.box_left),
             (f.pointer[1] - cfg.box_top) / (cfg.box_bottom - cfg.box_top),
         )
+        p = tuple(v + o for v, o in zip(base, self.mapping_offset))
         p = tuple(filt.update(v, t) for filt, v in zip(self.filters, p))
         pred = prediction or rule_prediction(f, cfg.engage_ratio, cfg.release_ratio)
         label = pred.label
@@ -125,6 +143,8 @@ class GestureEngine:
         elif self.state == "WAIT_OPEN":
             # Geometry AND classifier must agree on an open hand to re-arm.
             if label == "open" and f.pinch > cfg.release_ratio and self._confirmed("arm", t):
+                if cfg.reanchor_on_open:
+                    p = self._reanchor(base, t)
                 self.state = "POINT"
                 self.pending = None
                 events.append(self._move(p))
@@ -133,7 +153,12 @@ class GestureEngine:
         elif self.state == "SCROLL":
             if label == "scroll":
                 if self.scroll_y is not None:
-                    dy = (self.scroll_y - p[1]) * cfg.scroll_gain
+                    # Pointer range changes must not multiply wheel sensitivity.
+                    dy = (
+                        (self.scroll_y - p[1])
+                        * cfg.scroll_gain
+                        * ((cfg.box_bottom - cfg.box_top) / 0.60)
+                    )
                     if abs(dy) > 0.01:
                         events.append(InputEvent("scroll", value=dy))
                 self.scroll_y = p[1]
@@ -146,6 +171,8 @@ class GestureEngine:
                 if self._confirmed("release", t):
                     events += self._release()
                     self.state = "POINT"
+                    if cfg.reanchor_on_open:
+                        self._reanchor(base, t)
             elif label in ("uncertain", "scroll"):
                 # Low-confidence predictions never hold an OS button indefinitely.
                 if self._confirmed("invalid_press", t):

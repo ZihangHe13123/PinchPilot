@@ -97,6 +97,28 @@ class MouseOutput:
             self.q.CGEventSourceKeyState(self.q.kCGEventSourceStateCombinedSessionState, 53)
         )
 
+    def position(self) -> tuple[float, float]:
+        """Read the cursor; never emit an event. Coordinates are primary-screen normalized."""
+        if sys.platform == "darwin":
+            point = self.q.CGEventGetLocation(self.q.CGEventCreate(None))
+            x, y = point
+        else:
+
+            class Point(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_int32), ("y", ctypes.c_int32)]
+
+            point = Point()
+            self.user32.GetCursorPos.argtypes = (ctypes.POINTER(Point),)
+            self.user32.GetCursorPos.restype = ctypes.c_int32
+            if not self.user32.GetCursorPos(ctypes.byref(point)):
+                raise OSError("Windows 无法读取当前光标位置")
+            x, y = point.x, point.y
+        left, top, width, height = self.bounds
+        return (
+            min(1.0, max(0.0, (x - left) / max(width - 1, 1))),
+            min(1.0, max(0.0, (y - top) / max(height - 1, 1))),
+        )
+
     def emit(self, event: InputEvent) -> None:
         left, top, width, height = self.bounds
         x, y = left + event.x * (width - 1), top + event.y * (height - 1)

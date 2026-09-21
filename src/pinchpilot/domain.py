@@ -58,6 +58,7 @@ class EngineConfig:
     box_top: float = 0.20
     box_right: float = 0.80
     box_bottom: float = 0.80
+    reanchor_on_open: bool = False
 
     def validate(self) -> None:
         import math

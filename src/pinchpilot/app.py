@@ -1,7 +1,7 @@
 import json
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -88,7 +88,15 @@ class MainWindow(QMainWindow):
         self.workspace = workspace.resolve()
         self.record_dir = self.workspace / "data" / "recordings"
         self.report_dir = self.workspace / "reports"
-        self.engine = GestureEngine()
+        self.engine = GestureEngine(
+            EngineConfig(
+                box_left=0.35,
+                box_top=0.35,
+                box_right=0.65,
+                box_bottom=0.65,
+                reanchor_on_open=True,
+            )
+        )
         self.worker = None
         self.stopping_workers = []
         self.jobs = set()
@@ -149,6 +157,7 @@ class MainWindow(QMainWindow):
         main = QVBoxLayout()
         self.tabs = QTabWidget()
         self.camera_view = CameraView()
+        self.camera_view.box = self.engine.active_box
         self.tabs.addTab(self.camera_view, "实时预览")
         practice_page = QWidget()
         practice_page.setObjectName("practice")
@@ -226,6 +235,22 @@ class MainWindow(QMainWindow):
         self.stable_check.setChecked(True)
         self.stable_check.toggled.connect(self._change_stability)
         layout.addWidget(self.stable_check)
+        self.motion_range = QComboBox()
+        self.motion_range.addItem("小幅移动 · 30% 范围（推荐）", 0.30)
+        self.motion_range.addItem("更小幅度 · 20% 范围", 0.20)
+        self.motion_range.addItem("原始范围 · 60%（对照）", 0.60)
+        self.motion_range.currentIndexChanged.connect(self._change_motion)
+        layout.addWidget(self.motion_range)
+        self.clutch_check = QCheckBox("握拳休息，张开后从原光标位置继续")
+        self.clutch_check.setChecked(True)
+        self.clutch_check.toggled.connect(self._change_motion)
+        layout.addWidget(self.clutch_check)
+        motion_tip = QLabel(
+            "范围越小，移动越省，但也更敏感。手移出画面也可休息；重新分开拇指食指后继续。"
+        )
+        motion_tip.setWordWrap(True)
+        motion_tip.setObjectName("subtitle")
+        layout.addWidget(motion_tip)
         helptext = QLabel(
             "首次启动可能请求相机权限。真实控制仅作用于主屏；录制与校准时自动回到预览。"
         )
@@ -438,6 +463,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self.output = MouseOutput()
+            if self.engine.config.reanchor_on_open:
+                self.engine.pointer = self.output.position()
             self.engine.reset()
             self.live_button.setText("关闭系统鼠标控制")
             self.chip.setText("系统控制已启用 · Esc 停止")
@@ -460,6 +487,32 @@ class MainWindow(QMainWindow):
         self._disable_live()
         self.practice.stop()
         self.engine.config.stabilise = enabled
+
+    def _change_motion(self, _=None):
+        self._disable_live()
+        self.practice.stop()
+        span = self.motion_range.currentData()
+        edge = (1.0 - span) / 2
+        config = replace(
+            self.engine.config,
+            box_left=edge,
+            box_top=edge,
+            box_right=1 - edge,
+            box_bottom=1 - edge,
+            reanchor_on_open=self.clutch_check.isChecked(),
+        )
+        pointer = self.engine.pointer
+        self.engine = GestureEngine(config)
+        self.engine.pointer = pointer
+        self.pause_button.setChecked(False)
+        self.camera_view.box = self.engine.active_box
+        self.camera_view.update()
+        hint = (
+            "握拳可停住光标并调整手位，张开后从原位置继续。"
+            if config.reanchor_on_open
+            else "当前使用固定区域映射；恢复时光标会回到手位对应的位置。"
+        )
+        self.set_notice(f"已切换到 {span:.0%} 的移动范围，并回到预览。{hint}")
 
     def _change_recognizer(self, index):
         self._disable_live()
@@ -498,6 +551,7 @@ class MainWindow(QMainWindow):
                             "output": "os" if self.output else "preview",
                             "recognizer": self.recognizer.currentText(),
                             "stabilise": self.engine.config.stabilise,
+                            "config": asdict(self.engine.config),
                             "event": asdict(event),
                         }
                     )
@@ -554,6 +608,7 @@ class MainWindow(QMainWindow):
                 return
         result = self.engine.process(frame, prediction)
         self._dispatch(result)
+        self.camera_view.box = self.engine.active_box
         self.camera_view.set_frame(rgb, frame, result, self.source == "synthetic_demo")
         ratio = f"{result.pinch:.3f}" if result.pinch is not None else "—"
         predicted = result.prediction.label if result.prediction else "未检测到手"
@@ -579,6 +634,8 @@ class MainWindow(QMainWindow):
             self.calibrate_button,
             self.load_profile_button,
             self.reset_profile_button,
+            self.motion_range,
+            self.clutch_check,
         ):
             widget.setEnabled(enabled)
         self.train_button.setEnabled(enabled and not self.training_busy)
@@ -674,8 +731,13 @@ class MainWindow(QMainWindow):
                 self.workspace / "data" / "profiles" / f"{safe_name(self.participant.text())}.json"
             )
             profile = json.loads(path.read_text(encoding="utf-8"))
-            config = EngineConfig(**profile["config"])
-            config.stabilise = self.stable_check.isChecked()
+            saved = EngineConfig(**profile["config"])
+            saved.validate()
+            config = replace(
+                self.engine.config,
+                engage_ratio=saved.engage_ratio,
+                release_ratio=saved.release_ratio,
+            )
             self.engine = GestureEngine(config)
             self.pause_button.setChecked(False)
             self.calibration_status.setText(
@@ -688,7 +750,14 @@ class MainWindow(QMainWindow):
     def reset_profile(self):
         self._disable_live()
         self.practice.stop()
-        self.engine = GestureEngine(EngineConfig(stabilise=self.stable_check.isChecked()))
+        defaults = EngineConfig()
+        self.engine = GestureEngine(
+            replace(
+                self.engine.config,
+                engage_ratio=defaults.engage_ratio,
+                release_ratio=defaults.release_ratio,
+            )
+        )
         self.pause_button.setChecked(False)
         self.calibration_status.setText("默认阈值 · 捏合 0.26 / 释放 0.40")
         self.set_notice("已恢复默认规则阈值，可与个人校准做对照。")
@@ -745,6 +814,9 @@ class MainWindow(QMainWindow):
         if virtual and self.source == "none":
             self.set_notice("手势任务需要先启动相机或演示。")
             return
+        if virtual:
+            self.engine.pointer = (0.5, 0.5)
+            self.engine.reset()
         self.practice.start(
             self.report_dir / "tasks",
             {
@@ -753,6 +825,7 @@ class MainWindow(QMainWindow):
                 "source": self.source if virtual else "physical_mouse_or_trackpad",
                 "recognizer": self.recognizer.currentText(),
                 "config": asdict(self.engine.config),
+                "initial_pointer": self.engine.pointer if virtual else None,
             },
             virtual,
             self.task_choice.currentData(),
