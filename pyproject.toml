@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pinchpilot"
+version = "0.1.0"
+description = "Cross-platform webcam pinch interaction research prototype"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "numpy>=1.26,<3",
+  "opencv-contrib-python>=4.10,<5",
+  "mediapipe>=0.10.20,<0.11",
+  "PySide6>=6.8,<7",
+  "scikit-learn>=1.5,<2",
+  "joblib>=1.4,<2",
+  "matplotlib>=3.9,<4",
+  "pyobjc-framework-Quartz>=11,<13; sys_platform == 'darwin'",
+  "pyobjc-framework-ApplicationServices>=11,<13; sys_platform == 'darwin'",
+  "pyobjc-framework-AVFoundation>=11,<13; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+pinchpilot = "pinchpilot.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pinchpilot"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src/pinchpilot", "tests", "scripts", "docs", "README.md", "THIRD_PARTY.md",
+                "pyproject.toml", "uv.lock", "requirements.lock", ".python-version", ".gitignore",
+                "launch_mac.command", "launch_windows.cmd", ".github/workflows/checks.yml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
