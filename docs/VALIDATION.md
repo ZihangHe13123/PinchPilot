@@ -1,6 +1,18 @@
 # 验证记录
 
-日期：2026-09-21。当前是本地桌面测试版 v0.8.0；没有发布到远程仓库，没有执行 GitHub Actions，也没有提交 Canvas。
+日期：2026-09-21。当前是本地桌面测试版 v0.8.1；没有发布到远程仓库，没有执行 GitHub Actions，也没有提交 Canvas。
+
+## v0.8.1 Windows 便携测试包
+
+按用户要求为组员制作 Windows 10/11 x64 便携 ZIP。内含 CPython 3.12.10、29 个锁定的第三方发行包、PinchPilot 应用代码与经哈希校验的官方手部模型。`Start.cmd` 打开桌面工具，`Demo.cmd` 仅演示，`Diagnose.cmd` 产生本地报告；相机和真实鼠标仍默认关闭。
+
+- **261 passed**，ruff 与格式检查通过。新增检查覆盖便携模型路径和离线读取、缺失模型阻止启动并保存错误、桌面启动参数、中文路径下子进程错误日志、诊断不改变试用设置及损坏模型不触发下载。
+- 在 Mac 上实际执行便携诊断脚本：依赖导入、空白合成帧的模型 CPU 推理、离屏桌面演示与定时退出通过。复用本机 Python 3.11 及 Mac 依赖，**不是执行 Windows 包或 CPython 3.12 的证明**。
+- Windows 包包含的 30 个发行包均通过目标 Python/Windows wheel 标签与传递依赖约束检查。检查 688 个 x64 PE 文件；sounddevice 上游还附有 4 个未使用的 x86/ARM64 替代 DLL，分别记录，不误算为 x64。
+- 保留 63 份第三方 license/notice 文件，记录 Python、模型、微软可选运行库安装器来源及 SHA-256。ZIP CRC、所需入口、相对运行时搜索路径、CRLF 启动脚本、UTF-8 中文说明检查通过；无个人设置、试用记录或开发机绝对路径。逐文件哈希在 `FILES.sha256`，外层 ZIP 另有 `.sha256` 文件。
+- 无 Windows 主机，未执行 Windows Python/DLL、相机或系统输入；组员先按包内五分钟清单检查移动、左右键、拖拽、滚动、Esc、丢手与最小化。遇到失败收集诊断与发生时间，再做针对性修复。
+
+证据在 `reports/verification/windows-0.8.1/`，包括测试 XML、包检查与本机诊断。发布文件为 `dist/PinchPilot-0.8.1-Windows-x64.zip`，组内使用步骤与反馈模板分别见 [Windows 试用说明](WINDOWS_TRIAL.md)、[反馈模板](WINDOWS_FEEDBACK.md)。
 
 ## v0.8 连续灵敏度与 V 手势滚轮
 

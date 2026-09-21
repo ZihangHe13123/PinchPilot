@@ -14,12 +14,31 @@ PinchPilot's Python application code is independently implemented for this cours
 | [Win32 MOUSEINPUT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-mouseinput) | Left/right button transition flags used by the native adapter; checked against official documentation. |
 | [Core Graphics CGEventType](https://developer.apple.com/documentation/coregraphics/cgeventtype) | Native mouse button and dragged-event types. |
 
-Dependencies are installed from their own distributions with their accompanying licenses. A wheel/source package of this project does not embed their binaries. Review their license files when preparing a bundled executable, especially Qt/PySide6 distribution requirements.
+The project's wheel/source package does not embed dependency binaries. The Windows
+portable ZIP additionally includes unmodified upstream Python and dependency binaries,
+their original license/notice files, and the verified hand model. `BUILD_INFO.json`
+lists versions, provenance, hashes and license locations; `FILES.sha256` inventories
+the distribution. Application Python source and replaceable dependency directories
+remain available in `runtime/Lib/site-packages`.
 
-The hand-landmarker task is fetched separately from Google's versioned model storage:
+Python's license is in `runtime/LICENSE.txt`; each dependency's licenses remain in
+its `.dist-info/licenses` or package directory. Qt/PySide6 source and distribution
+information: [Qt for Python](https://code.qt.io/cgit/pyside/pyside-setup.git/),
+[Qt source archives](https://download.qt.io/archive/qt/),
+[Qt for Python licensing](https://doc.qt.io/qtforpython-6/licenses.html).
+The optional Microsoft VC++ runtime installer is copied unchanged from its official
+download endpoint and is only run if the tester chooses it. Its own installer
+presents Microsoft's terms.
+
+Source launches fetch the hand-landmarker task separately; Windows portable launches
+use the bundled identical file. Its source is Google's versioned model storage:
 
 `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`
 
 Expected SHA-256: `fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1`.
 
-The project does not grant a license to Google's model weights. Retain model provenance and consult the model's distribution terms when including weights in a coursework submission or other redistribution.
+Google's [Hand Landmarker documentation](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker)
+links this model family to the [hand tracking model card](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Hand%20Tracking%20(Lite_Full)%20with%20Fairness%20Oct%202021.pdf),
+which states Apache License 2.0. The Apache text is retained with MediaPipe's license
+files. PinchPilot does not claim authorship of the pretrained model or change its
+license. These bundled components are separate from the project's own coursework code.

@@ -2,11 +2,13 @@
 
 用普通电脑摄像头进行捏合交互的课程研究原型。研究目标是：**以尽可能少的辅助动作和尽可能小的手部活动幅度，稳定完成桌面操控**，并检验误操作、响应速度和主观费力度。
 
-**当前版本 v0.8.0：新增连续灵敏度滑条和 V 手势滚轮。** 桌面工具支持拇中定位、食拇左键/拖拽、拇无名指右键和真实滚轮，保留既有默认移动手感与抗抖。提供必要测试数据、功能开关、本地记录和后台 Esc/超时松键。完整步骤见 [桌面试用说明](docs/DESKTOP_TRIAL.md)。
+**当前版本 v0.8.1：新增 Windows 便携测试包，保留 v0.8 的灵敏度滑条和 V 手势滚轮。** 桌面工具支持拇中定位、食拇左键/拖拽、拇无名指右键和真实滚轮，保留既有默认移动手感与抗抖。提供必要测试数据、功能开关、本地记录和后台 Esc/超时松键。完整步骤见 [桌面试用说明](docs/DESKTOP_TRIAL.md)。
 
 ## 立即启动桌面测试版
 
-这台 Mac 的项目位于 `/Users/zhihang/Project/PinchPilot`：双击 **launch_desktop_mac.command**；Windows 双击 **launch_desktop_windows.cmd**。或在项目目录执行：
+Windows 组员使用 `PinchPilot-0.8.1-Windows-x64.zip`：全部解压后双击 **Start.cmd**，无需安装 Python/uv，模型随包附带。详见 [Windows 试用说明](docs/WINDOWS_TRIAL.md)。
+
+源码方式：Mac 双击 **launch_desktop_mac.command**；Windows 双击 **launch_desktop_windows.cmd**。或在项目目录执行：
 
 ```sh
 uv run pinchpilot desktop
@@ -74,7 +76,9 @@ v0.2 默认选择「小幅移动 · 30% 范围」，即相机画面宽高各 30%
 
 完整对照原来的映射时，选择 **60% 并取消休息后恢复**。命令行离线回放的默认配置仍是原始固定映射；传入校准配置可指定其他映射。新版本不会热更新已运行的程序：先按 Esc 停止控制，退出旧窗口，再用启动脚本重新打开。
 
-## Windows 安装
+## Windows 源码安装与便携包构建
+
+普通试用优先使用上面的便携 ZIP。维护者可运行 `uv run python scripts/build_windows_portable.py` 重建，产物在 `dist/`；构建需要联网，运行不需要下载 Python/模型。构建脚本核对官方运行时、模型与锁定依赖的哈希，并保留第三方许可证。可在 Mac 组装 Windows 预编译依赖，但这不代表已在 Windows 执行验证。
 
 首版目标环境：Windows 10/11 x64、macOS Apple Silicon。当前依赖锁未覆盖 Intel Mac；Windows ARM 暂未列为验收目标。Windows 真机摄像头与输入测试仍待完成。
 

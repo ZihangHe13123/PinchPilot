@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sys
 import threading
 import time
@@ -14,6 +15,8 @@ MODEL_SHA256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1
 
 
 def default_model_path() -> Path:
+    if bundled := os.environ.get("PINCHPILOT_MODEL_PATH"):
+        return Path(bundled).expanduser()
     return Path.home() / ".cache" / "pinchpilot" / "hand_landmarker_v1.task"
 
 
