@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from .tripod import TripodConfig
+from .wrist import validate_wrist_calibration
 
 
 class TripodControls(QWidget):
@@ -25,6 +26,13 @@ class TripodControls(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         form = QFormLayout()
+        self.pointer_basis = QComboBox()
+        self.pointer_basis.addItem("现有指尖位置", "position")
+        self.pointer_basis.addItem("手腕转动 · 实验", "wrist")
+        self.pointer_basis.setToolTip(
+            "腕动模式按转动量移动光标，手腕停下光标就停；需先示范方向校准。"
+        )
+        self.wrist_calibration = ()
         self.motion_profile = QComboBox()
         for label, value in (
             ("原版 · 对照", "classic"),
@@ -96,6 +104,7 @@ class TripodControls(QWidget):
         for label, value in (("慢 · 精细翻动", 30.0), ("标准", 60.0), ("快 · 长页面", 120.0)):
             self.scroll_speed.addItem(label, value)
         self.scroll_speed.setCurrentIndex(1)
+        form.addRow("定位方式", self.pointer_basis)
         form.addRow("移动模式", self.motion_profile)
         form.addRow("移动灵敏度", speed)
         form.addRow("抗抖强度", self.stability)
@@ -110,15 +119,18 @@ class TripodControls(QWidget):
         self.probe_button = QPushButton("记录 8 秒静止抖动")
         self.probe_button.clicked.connect(self.probe.emit)
         layout.addWidget(self.probe_button)
-        hint = QLabel(
+        self.interaction_hint = QLabel(
             "拇中定位；食拇短捏松开是左键，保持到进度环满可拖，松食指放下。"
             "食指移开，拇指＋无名指轻捏是右键。松中指锁住位置，捏回可继续；Esc 暂停。"
             "V 手势、拇指分开，上下轻移滚动；收指停止。"
         )
-        hint.setWordWrap(True)
-        hint.setObjectName("subtitle")
-        layout.addWidget(hint)
+        self.interaction_hint.setWordWrap(True)
+        self.interaction_hint.setObjectName("subtitle")
+        self._position_hint = self.interaction_hint.text()
+        layout.addWidget(self.interaction_hint)
+        self.pointer_basis.currentIndexChanged.connect(self._refresh_basis_hint)
         for choice in (
+            self.pointer_basis,
             self.motion_profile,
             self.stability,
             self.contact,
@@ -127,6 +139,25 @@ class TripodControls(QWidget):
             self.scroll_speed,
         ):
             choice.currentIndexChanged.connect(lambda _: self.changed.emit())
+
+    def _refresh_basis_hint(self, _):
+        wrist = self.pointer_basis.currentData() == "wrist"
+        self.motion_profile.setEnabled(not wrist)
+        if wrist:
+            self.motion_profile.setToolTip(
+                "腕动采用固定增益精细滤波；下方灵敏度仍可调。切回位置模式恢复原选择。"
+            )
+            self.interaction_hint.setText(
+                "先完成腕动方向校准。拇中捏住后，手腕转动一段、光标移动一段；"
+                "停腕即停，松中指可回到舒服姿势再接管。"
+                "腕动采用固定增益精细滤波，灵敏度仍可调。"
+                "食拇点击/保持拖拽、拇无名指右键与 V 手势滚动不变；不会根据偏转持续移动。"
+            )
+        else:
+            self.motion_profile.setToolTip(
+                "原版保留已有移动手感；精细模式改善慢速微调；自适应模式随移动速度调整灵敏度。"
+            )
+            self.interaction_hint.setText(self._position_hint)
 
     def _show_sensitivity(self, value):
         self.sensitivity_value.setText(f"{value / 100:.2f}×")
@@ -159,13 +190,28 @@ class TripodControls(QWidget):
         self.rest_noise_x, self.rest_noise_y = float(x), float(y)
         return True
 
+    def restore_wrist_calibration(self, values):
+        """Restore only a validated empty/15-number calibration, without signals."""
+        if not isinstance(values, (tuple, list)):
+            return False
+        try:
+            candidate = tuple(values)
+            validate_wrist_calibration(candidate)
+        except (ValueError, TypeError):
+            return False
+        self.wrist_calibration = tuple(float(value) for value in candidate)
+        return True
+
     def configuration(self):
         touch = self.contact.currentData()
         right_touch = self.right_contact.currentData()
+        wrist = self.pointer_basis.currentData() == "wrist"
         return TripodConfig(
+            pointer_basis=self.pointer_basis.currentData(),
+            wrist_calibration=self.wrist_calibration,
             motion_profile=self.motion_profile.currentData(),
-            rest_noise_x=self.rest_noise_x,
-            rest_noise_y=self.rest_noise_y,
+            rest_noise_x=0.0 if wrist else self.rest_noise_x,
+            rest_noise_y=0.0 if wrist else self.rest_noise_y,
             span=30 / self.sensitivity.value(),
             deadband=self.stability.currentData(),
             touch_ratio=touch,

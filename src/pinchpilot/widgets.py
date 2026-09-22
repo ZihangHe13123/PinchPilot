@@ -86,18 +86,22 @@ class CameraView(QWidget):
                     QPointF(area.left(), area.top() + i * h / 10),
                     QPointF(area.right(), area.top() + i * h / 10),
                 )
-        left, top, right, bottom = self.box
-        p.save()
-        p.setClipRect(area)
-        p.setPen(QPen(QColor("#73b6c7"), 1, Qt.PenStyle.DashLine))
-        p.drawRoundedRect(
-            QRectF(
-                area.left() + left * w, area.top() + top * h, (right - left) * w, (bottom - top) * h
-            ),
-            12,
-            12,
-        )
-        p.restore()
+        if self.box is not None:
+            left, top, right, bottom = self.box
+            p.save()
+            p.setClipRect(area)
+            p.setPen(QPen(QColor("#73b6c7"), 1, Qt.PenStyle.DashLine))
+            p.drawRoundedRect(
+                QRectF(
+                    area.left() + left * w,
+                    area.top() + top * h,
+                    (right - left) * w,
+                    (bottom - top) * h,
+                ),
+                12,
+                12,
+            )
+            p.restore()
         # Camera-frame edges are distinct from the pointer-mapping rectangle.
         strips = {
             "left": QRectF(area.left(), area.top(), 7, h),
@@ -148,7 +152,9 @@ class CameraView(QWidget):
             "合成动作演示 · 不代表识别效果"
             if self.demo
             else (
-                "拇中中点：灰色原始点 · 蓝绿色稳定点"
+                "腕动预览 · 稳定点表示屏幕位置"
+                if self.box is None
+                else "拇中中点：灰色原始点 · 蓝绿色稳定点"
                 if self.result and self.result.mode == "tripod"
                 else "镜像预览 · 食指相对掌部定位"
                 if self.result and self.result.mode != "pinch"
@@ -156,6 +162,7 @@ class CameraView(QWidget):
             ),
         )
         if self.result and self.result.pointer:
+            left, top, right, bottom = self.box or (0.0, 0.0, 1.0, 1.0)
             x, y = self.result.pointer
             point = QPointF(
                 area.left() + (left + x * (right - left)) * w,

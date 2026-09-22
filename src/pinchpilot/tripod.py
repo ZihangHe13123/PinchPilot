@@ -9,12 +9,21 @@ from .domain import EngineResult, HandFrame, InputEvent, Prediction
 from .features import extract
 from .filtering import StablePointer
 from .motion import TunedPointer
+from .wrist import (
+    MAX_FRAME_ANGLE,
+    WristMapping,
+    palm_rotation,
+    rotation_vector,
+    validate_wrist_calibration,
+)
 
 
 @dataclass(frozen=True)
 class TripodConfig:
     mode: str = "tripod"
     motion_profile: str = "classic"
+    pointer_basis: str = "position"
+    wrist_calibration: tuple[float, ...] = ()
     screen_width: float = 1920.0
     screen_height: float = 1080.0
     rest_noise_x: float = 0.0
@@ -46,6 +55,7 @@ class TripodConfig:
     max_jump: float = 0.10
 
     def validate(self):
+        validate_wrist_calibration(self.wrist_calibration)
         if not all(
             isinstance(v, bool)
             for v in (self.right_enabled, self.drag_enabled, self.scroll_enabled)
@@ -54,10 +64,11 @@ class TripodConfig:
         if (
             self.mode != "tripod"
             or self.motion_profile not in ("classic", "precise", "adaptive")
+            or self.pointer_basis not in ("position", "wrist")
             or not all(
                 math.isfinite(v)
                 for k, v in vars(self).items()
-                if k not in ("mode", "motion_profile")
+                if k not in ("mode", "motion_profile", "pointer_basis", "wrist_calibration")
             )
         ):
             raise ValueError("三指配置无效")
@@ -109,15 +120,20 @@ class TripodFeatures:
     scroll_pose: bool = False
 
 
-def tripod_features(frame: HandFrame) -> TripodFeatures | None:
+def tripod_features(frame: HandFrame, *, spatial_scale=False) -> TripodFeatures | None:
     if len(frame.landmarks) != 21 or not math.isfinite(frame.aspect) or frame.aspect <= 0:
         return None
     p = np.asarray(frame.landmarks, dtype=float)
     if p.shape != (21, 3) or not np.isfinite(p).all():
         return None
     xyz = p * [frame.aspect, 1.0, frame.aspect]
+    dimension = 3 if spatial_scale else 2
     scale = float(
-        (np.linalg.norm(xyz[5, :2] - xyz[17, :2]) + np.linalg.norm(xyz[0, :2] - xyz[9, :2])) / 2
+        (
+            np.linalg.norm(xyz[5, :dimension] - xyz[17, :dimension])
+            + np.linalg.norm(xyz[0, :dimension] - xyz[9, :dimension])
+        )
+        / 2
     )
     if scale < 0.025:
         return None
@@ -141,6 +157,11 @@ class TripodEngine:
     def __init__(self, config: TripodConfig | None = None):
         self.config = config or TripodConfig()
         self.config.validate()
+        self.wrist_mapping = (
+            WristMapping(self.config.wrist_calibration)
+            if self.config.pointer_basis == "wrist" and self.config.wrist_calibration
+            else None
+        )
         self.enabled = True
         self.pointer = None
         self.left_down = False
@@ -156,6 +177,7 @@ class TripodEngine:
         self.last_hand = ""
         self.features = None
         self.camera_anchor = None
+        self.wrist_anchor = self.wrist_pose = None
         self.pointer_anchor = self.pointer or (0.5, 0.5)
         self.raw_pointer = None
         self.motion_engaged = False
@@ -182,6 +204,8 @@ class TripodEngine:
 
     @property
     def active_box(self):
+        if self.config.pointer_basis == "wrist":
+            return None
         span = self.config.span
         center = self.camera_anchor or (0.5, 0.5)
         left, top = tuple(c - p * span for c, p in zip(center, self.pointer_anchor))
@@ -228,6 +252,14 @@ class TripodEngine:
                 else "V 手势已准备 · 上下轻移滚动；静止不翻页，仍可捏合点击"
             )
         f = self.features
+        if self.config.pointer_basis == "wrist":
+            hints["WAIT_GRIP"] = (
+                "先完成12秒腕动方向校准"
+                if self.wrist_mapping is None
+                else "前臂放稳 · 拇中捏住接管腕动，食指移开"
+            )
+            if self.state == "CONTROL":
+                hints["CONTROL"] = "转腕移动 · 停腕停光标 · 松中指回位 · 食拇点击/保持拖拽"
         self.last_result = EngineResult(
             self.state,
             self.pointer,
@@ -252,10 +284,16 @@ class TripodEngine:
 
     def _anchor(self, f, timestamp):
         self.camera_anchor = f.point
+        if self.wrist_pose is not None:
+            self.wrist_anchor = self.wrist_pose.copy()
         self.pointer_anchor = self.pointer or (0.5, 0.5)
         self.pointer = self.pointer_anchor
         self.raw_pointer = self.pointer_anchor
         cfg = self.config
+        if cfg.pointer_basis == "wrist":
+            # Wrist displacement uses constant gain; position calibration has
+            # different units and must never silently change angular filtering.
+            cfg = replace(cfg, motion_profile="precise", rest_noise_x=0.0, rest_noise_y=0.0)
         self.stabilizer = (
             StablePointer(cfg.deadband, cfg.filter_cutoff, cfg.filter_beta)
             if cfg.motion_profile == "classic"
@@ -428,14 +466,33 @@ class TripodEngine:
         t = frame.timestamp
         if not self.enabled:
             return self._result()
-        f = tripod_features(frame)
+        cfg = self.config
+        wrist = cfg.pointer_basis == "wrist"
+        f = tripod_features(frame, spatial_scale=wrist)
         if f is None:
             return self.reset()
+        if wrist:
+            if self.wrist_mapping is None:
+                return self._disarm(f, frame, "先完成12秒腕动方向校准，再启用鼠标")
+            pose = palm_rotation(frame)
+            if pose is None:
+                return self._disarm(
+                    f, frame, "掌部姿态暂不可用 · 调整机位，让掌部清晰可见后重新捏合"
+                )
+            if not self.wrist_mapping.in_range(pose):
+                return self._disarm(f, frame, "转腕超出校准范围 · 回到自然姿势，移开食指后重新捏合")
+            if (
+                self.wrist_pose is not None
+                and np.linalg.norm(rotation_vector(pose @ self.wrist_pose.T)) > MAX_FRAME_ANGLE
+            ):
+                return self._disarm(f, frame, "掌部朝向跳变 · 暂停并松键，请回到自然姿势重新捏合")
+            self.wrist_pose = pose
         if self.features is not None and (
             (self.last_hand and frame.handedness and self.last_hand != frame.handedness)
             or math.dist(f.palm, self.features.palm) > self.config.max_jump
             or (
                 self.motion_engaged
+                and not wrist
                 and f.grip <= self.config.grip_release
                 and math.dist(f.point, self.features.point) > self.config.max_jump
             )
@@ -443,7 +500,6 @@ class TripodEngine:
             return self._disarm(f, frame, "追踪发生跳变 · 暂停移动，请移开食指重新捏住")
         self.last_time = self.last_seen = t
         self.features, self.last_hand = f, frame.handedness
-        cfg = self.config
         scrolling = self._scroll(f, frame)
         if scrolling is not None:
             return scrolling
@@ -494,9 +550,13 @@ class TripodEngine:
             else:
                 self.arm_since = None
         else:
+            displacement = (
+                self.wrist_mapping.displacement(self.wrist_pose, self.wrist_anchor)
+                if wrist
+                else tuple(v - c for v, c in zip(f.point, self.camera_anchor))
+            )
             self.raw_pointer = tuple(
-                a + (v - c) / cfg.span
-                for a, v, c in zip(self.pointer_anchor, f.point, self.camera_anchor)
+                a + delta / cfg.span for a, delta in zip(self.pointer_anchor, displacement)
             )
         if self.left_down:
             return self._pressed(f, t)
