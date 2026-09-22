@@ -57,6 +57,27 @@ def parser() -> argparse.ArgumentParser:
     compare.add_argument("--output", type=Path, required=True, help="输出对比 JSON 文件")
     compare.add_argument("--seed", type=int, default=20260922)
     compare.add_argument("--trace", action="store_true", help="包含逐帧虚拟指针与事件")
+    fixture = sub.add_parser("ml-fixture", help="生成明确标记的合成三指标注；仅工程验证")
+    fixture.add_argument("--output", type=Path, required=True, help="需要一个空目录")
+    fixture.add_argument("--seed", type=int, default=20260922)
+    annotate = sub.add_parser("ml-label-template", help="为关键点录制生成未复核的空白接触标注")
+    annotate.add_argument("recording", type=Path)
+    annotate.add_argument("--output", type=Path, required=True)
+    contact_inspect = sub.add_parser("ml-inspect", help="检查连续接触数据、人工标注和分组泄漏")
+    contact_inspect.add_argument("manifest", type=Path)
+    contact_train = sub.add_parser("ml-train", help="离线训练三路接触RF/CNN，不接管系统鼠标")
+    contact_train.add_argument("manifest", type=Path)
+    contact_train.add_argument("--output", type=Path, required=True)
+    contact_train.add_argument("--model", choices=("forest", "cnn"), default="forest")
+    contact_train.add_argument("--seed", type=int, default=42)
+    contact_train.add_argument("--epochs", type=int, default=20)
+    contact_train.add_argument(
+        "--allow-synthetic", action="store_true", help="只为工程验证训练合成数据"
+    )
+    shadow = sub.add_parser("ml-shadow", help="离线旁路比较模型与几何规则；只加载可信的本地模型")
+    shadow.add_argument("recording", type=Path)
+    shadow.add_argument("--model", type=Path, required=True)
+    shadow.add_argument("--output", type=Path, required=True)
     return cli
 
 
@@ -196,6 +217,47 @@ def main(argv=None) -> int:
                 "output": str(args.output),
                 "source": "recorded" if args.recording else "synthetic",
                 "os_events_sent": False,
+            }
+        elif args.command == "ml-fixture":
+            from .contact_data import create_synthetic_contact_dataset
+
+            result = {
+                "manifest": str(create_synthetic_contact_dataset(args.output, args.seed)),
+                "source": "synthetic_engineering",
+            }
+        elif args.command == "ml-label-template":
+            from .contact_data import annotation_template
+
+            annotation_template(args.recording, args.output)
+            result = {"output": str(args.output), "reviewed": False, "labels": "unknown"}
+        elif args.command in ("ml-inspect", "ml-train"):
+            from .contact_data import load_contact_dataset
+
+            dataset = load_contact_dataset(args.manifest)
+            if args.command == "ml-inspect":
+                result = {
+                    **dataset.metadata,
+                    "windows": {k: len(v.x) for k, v in dataset.partitions.items()},
+                }
+            else:
+                from .contact_models import train_contacts
+
+                result = train_contacts(
+                    dataset,
+                    args.output,
+                    model=args.model,
+                    seed=args.seed,
+                    epochs=args.epochs,
+                    allow_synthetic=args.allow_synthetic,
+                )
+        elif args.command == "ml-shadow":
+            from .contact_shadow import run_shadow
+
+            run_shadow(args.recording, args.model, args.output)
+            result = {
+                "output": str(args.output),
+                "os_events_sent": False,
+                "scope": "offline model suggestions only",
             }
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0

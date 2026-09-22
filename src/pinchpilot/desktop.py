@@ -53,6 +53,7 @@ class DesktopWindow(QMainWindow):
         self.closing_requested = False
         self.demo_started = None
         self.practice_window = None
+        self.contact_capture_window = None
         self.metrics_window = None
         self.last_render = 0
         self.control_hand_status = "相机关闭"
@@ -211,6 +212,9 @@ class DesktopWindow(QMainWindow):
         self.practice_button = QPushButton("打开交互测试台")
         self.practice_button.clicked.connect(self.open_practice)
         controls.addWidget(self.practice_button)
+        self.contact_capture_button = QPushButton("ML 关键点采集 · 默认不录制")
+        self.contact_capture_button.clicked.connect(self.open_contact_capture)
+        controls.addWidget(self.contact_capture_button)
         diagnostics_button = QPushButton("查看诊断与分段耗时")
         diagnostics_button.clicked.connect(self.open_diagnostics)
         controls.addWidget(diagnostics_button)
@@ -476,6 +480,8 @@ class DesktopWindow(QMainWindow):
         )
 
     def _configure(self):
+        if self.contact_capture_window is not None:
+            self.contact_capture_window.close()
         if self.practice_window is not None:
             self.practice_window.close()
         screen = QApplication.primaryScreen()
@@ -818,6 +824,8 @@ class DesktopWindow(QMainWindow):
         self._refresh()
 
     def stop_control(self):
+        if self.contact_capture_window is not None:
+            self.contact_capture_window.close()
         if self.practice_window is not None:
             self.practice_window.close()
         self.controller.stop("user_stop")
@@ -841,6 +849,10 @@ class DesktopWindow(QMainWindow):
                 frame = tripod_demo_frame(now, now - self.demo_started)
                 packet = Packet(None, frame, 0.0, 0.0, now)
             if packet is not None and self.controller.consume(packet):
+                if self.contact_capture_window is not None:
+                    self.contact_capture_window.feed(
+                        packet.frame, self.controller.clock(), self.controller.source
+                    )
                 if self.practice_window is not None:
                     self.practice_window.feed(
                         self.controller.result, self.controller.clock(), self.controller.source
@@ -855,6 +867,10 @@ class DesktopWindow(QMainWindow):
                         self.controller.source == "synthetic_demo",
                     )
             self.controller.tick()
+            if self.contact_capture_window is not None and not self.controller.fresh():
+                self.contact_capture_window.invalidate(
+                    self.controller.clock(), self.controller.source
+                )
             if self.practice_window is not None and not self.controller.fresh():
                 self.practice_window.invalidate(self.controller.clock(), self.controller.source)
             self._refresh_framing()
@@ -878,6 +894,7 @@ class DesktopWindow(QMainWindow):
         self.live_button.setText("关闭鼠标控制" if active else "启用鼠标控制")
         self.live_button.setEnabled(
             not control.calibrating
+            and not control.capture_active
             and not control.practice_active
             and not control.pending_release
             and control.source == "camera"
@@ -956,6 +973,8 @@ class DesktopWindow(QMainWindow):
         self.metrics_window.raise_()
 
     def open_practice(self):
+        if self.contact_capture_window is not None:
+            self.contact_capture_window.close()
         if self.practice_window is not None:
             self.practice_window.show()
             self.practice_window.raise_()
@@ -990,7 +1009,41 @@ class DesktopWindow(QMainWindow):
         self.controller.end_practice()
         self._refresh()
 
+    def open_contact_capture(self):
+        if self.practice_window is not None:
+            self.practice_window.close()
+        if self.contact_capture_window is not None:
+            self.contact_capture_window.show()
+            self.contact_capture_window.raise_()
+            return
+        candidate = None
+        try:
+            from .contact_capture import ContactCaptureWindow
+
+            self.controller.begin_capture()
+            candidate = ContactCaptureWindow(self.workspace, self)
+            # A real frame must arrive after opening; no cached frame is recorded.
+            candidate.invalidate(self.controller.clock(), self.controller.source)
+            candidate.show()
+            candidate.closed.connect(self._contact_capture_closed)
+            self.contact_capture_window = candidate
+        except Exception as error:
+            if candidate is not None:
+                candidate.close()
+                candidate.deleteLater()
+            self.contact_capture_window = None
+            self.controller.end_capture()
+            self.controller.notice = f"无法打开 ML 采集窗口：{error}"
+        self._refresh()
+
+    def _contact_capture_closed(self):
+        self.contact_capture_window = None
+        self.controller.end_capture()
+        self._refresh()
+
     def closeEvent(self, event):
+        if self.contact_capture_window is not None:
+            self.contact_capture_window.close()
         if self.practice_window is not None:
             self.practice_window.close()
         if self.metrics_window is not None:

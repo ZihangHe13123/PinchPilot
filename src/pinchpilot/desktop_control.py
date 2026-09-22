@@ -38,6 +38,7 @@ class DesktopController:
         self.wrist_calibration_error = ""
         self.framing = FramingMonitor()
         self.practice_active = False
+        self.capture_active = False
         self.last_tick = None
 
     @property
@@ -63,6 +64,8 @@ class DesktopController:
         return self.wrist_capture.progress(self.clock()) if self.wrist_capture else 0.0
 
     def start_calibration(self):
+        if self.capture_active:
+            raise RuntimeError("请先关闭 ML 关键点采集窗口，再进行校准")
         if self.source != "camera" or not self.fresh():
             raise RuntimeError("先启动实时相机预览，再进行静止校准")
         if self.engine.config.pointer_basis != "position":
@@ -118,6 +121,8 @@ class DesktopController:
         return summary if isinstance(summary, dict) else {}
 
     def start_wrist_calibration(self):
+        if self.capture_active:
+            raise RuntimeError("请先关闭 ML 关键点采集窗口，再进行校准")
         if self.source != "camera" or not self.fresh():
             raise RuntimeError("先启动实时相机预览，再进行腕动方向校准")
         if self.engine.config.pointer_basis != "wrist":
@@ -198,6 +203,8 @@ class DesktopController:
         return self.last_capture is not None and 0 <= now - self.last_capture < self.FRAME_TIMEOUT
 
     def enable(self):
+        if self.capture_active:
+            raise RuntimeError("ML 关键点采集窗口打开时，系统鼠标保持关闭")
         if self.practice_active:
             raise RuntimeError("测试台只控制虚拟光标；关闭测试台后再手动启用系统鼠标")
         if self.calibrating:
@@ -219,6 +226,8 @@ class DesktopController:
         self.metrics.record("control_started", config=asdict(self.engine.config))
 
     def begin_practice(self):
+        if self.capture_active:
+            raise RuntimeError("请先关闭 ML 关键点采集窗口")
         if not self.stop("practice_started"):
             raise RuntimeError("上一次松键仍在重试，暂不能打开测试台")
         self.practice_active = True
@@ -232,6 +241,19 @@ class DesktopController:
         self.practice_active = False
         self.metrics.record("practice_closed")
         self.notice = "测试台已关闭；需要时请手动重新启用鼠标控制。"
+
+    def begin_capture(self):
+        if self.practice_active:
+            raise RuntimeError("请先关闭交互测试台")
+        if not self.stop("ml_capture_window_opened"):
+            raise RuntimeError("上一次松键仍在重试，暂不能打开采集窗口")
+        self.capture_active = True
+        self.notice = "ML 采集准备 · 系统鼠标已关闭；只有明确开始后才保存关键点。"
+
+    def end_capture(self):
+        self.stop("ml_capture_window_closed")
+        self.capture_active = False
+        self.notice = "ML 采集窗口已关闭；系统鼠标需手动重新启用。"
 
     def mark_issue(self, category):
         path = self.metrics.mark_issue(category, self.source, asdict(self.engine.config))
