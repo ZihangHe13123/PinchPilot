@@ -5,6 +5,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, replace
 
+from .framing import FramingMonitor, FramingStatus, framing_hint
 from .motion_calibration import RestNoiseCalibration
 from .mouse_session import MouseSession
 from .platform_io import MouseOutput
@@ -30,6 +31,17 @@ class DesktopController:
         self.notice = "启动相机预览，再启用鼠标控制。Esc 随时停止。"
         self.calibration = None
         self.calibration_result = None
+        self.framing = FramingMonitor()
+
+    @property
+    def framing_status(self):
+        if self.source != "camera" or not self.fresh():
+            return FramingStatus()
+        return self.framing.status
+
+    @property
+    def framing_hint(self):
+        return framing_hint(self.framing_status, self.result.state)
 
     @property
     def calibrating(self):
@@ -145,6 +157,7 @@ class DesktopController:
             raise ValueError("未知画面来源")
         self.stop("source_changed")
         self.source = source
+        self.framing.reset()
         self.last_capture = None
         # An intentional source change is not a tracking failure.
         self.metrics.tracked = False
@@ -175,6 +188,7 @@ class DesktopController:
             or (self.last_capture is not None and t <= self.last_capture)
         ):
             self.metrics.dropped += 1
+            self.framing.reset()
             self.stop("invalid_or_stale_frame")
             return False
         self.last_capture = t
@@ -188,6 +202,8 @@ class DesktopController:
             self.engine.pointer = self.session.position()
         previous = self.engine.state
         self.result = self.engine.process(packet.frame)
+        if self.source == "camera":
+            self.framing.update(packet.frame, tracked=self.result.grip is not None)
         self.metrics.observe(packet, self.result, now)
         if self.active:
             self.session.emit(self.result.events)
@@ -214,6 +230,7 @@ class DesktopController:
             self.session.emit(self.result.events)
             self._sync_session()
         if not self.fresh(now):
+            self.framing.reset()
             self.metrics.no_tracking()
         self.metrics.sample(now, self.source, self.active)
 

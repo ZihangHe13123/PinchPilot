@@ -53,6 +53,7 @@ class CameraView(QWidget):
         self.result = None
         self.demo = False
         self.box = (0.2, 0.2, 0.8, 0.8)
+        self.frame_edges = ()
 
     def set_frame(self, rgb, frame: HandFrame, result: EngineResult, demo: bool = False):
         if rgb is not None:
@@ -97,6 +98,16 @@ class CameraView(QWidget):
             12,
         )
         p.restore()
+        # Camera-frame edges are distinct from the pointer-mapping rectangle.
+        strips = {
+            "left": QRectF(area.left(), area.top(), 7, h),
+            "right": QRectF(area.right() - 7, area.top(), 7, h),
+            "top": QRectF(area.left(), area.top(), w, 7),
+            "bottom": QRectF(area.left(), area.bottom() - 7, w, 7),
+        }
+        for edge in self.frame_edges:
+            if edge in strips:
+                p.fillRect(strips[edge], QColor("#ffc36b"))
         if self.frame and self.frame.landmarks:
             points = [
                 QPointF(area.left() + x * w, area.top() + y * h) for x, y, _ in self.frame.landmarks

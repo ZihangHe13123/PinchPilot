@@ -6,7 +6,7 @@ import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QLockFile, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .app import STYLE, Job
 from .desktop_control import DesktopController
+from .framing_overlay import FramingOverlay
 from .platform_io import camera_permission, enable_dpi_awareness, request_camera_access
 from .tripod_controls import TripodControls
 from .tripod_demo import tripod_demo_frame
@@ -53,6 +54,7 @@ class DesktopWindow(QMainWindow):
         self.control_hand_status = "相机关闭"
         self._calibration_seen = None
         self._calibration_summary = ""
+        self.framing_overlay = FramingOverlay()
         self.setWindowTitle(f"PinchPilot {__version__} · 桌面测试版")
         self.resize(980, 700)
         self._build_ui()
@@ -154,6 +156,11 @@ class DesktopWindow(QMainWindow):
         self.hand_status.setObjectName("subtitle")
         self.hand_status.setWordWrap(True)
         controls.addWidget(self.hand_status)
+        self.framing_status_label = QLabel()
+        self.framing_status_label.setObjectName("notice")
+        self.framing_status_label.setWordWrap(True)
+        self.framing_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        controls.addWidget(self.framing_status_label)
         # Keep camera/control/hand selection visible while the settings scroll together.
         self.settings_area = QScrollArea()
         self.settings_area.setWidgetResizable(True)
@@ -170,7 +177,17 @@ class DesktopWindow(QMainWindow):
         self.preview = QCheckBox("显示相机预览")
         self.on_top = QCheckBox("窗口置顶")
         self.logging = QCheckBox("保存本地测试记录")
-        for option in (self.right, self.drag, self.scroll, self.preview, self.on_top, self.logging):
+        self.edge_assist = QCheckBox("画面边缘提醒")
+        self.edge_assist.setToolTip("提醒不会改变鼠标移动或点击；控制时也会在桌面显示提示。")
+        for option in (
+            self.edge_assist,
+            self.right,
+            self.drag,
+            self.scroll,
+            self.preview,
+            self.on_top,
+            self.logging,
+        ):
             option.setChecked(option is not self.on_top)
             controls.addWidget(option)
         privacy = QLabel("记录性能、状态和按钮事件；不保存相机图像。")
@@ -276,7 +293,7 @@ class DesktopWindow(QMainWindow):
                 self.tripod_controls.motion_profile.setCurrentIndex(
                     self.tripod_controls.motion_profile.findData("classic")
                 )
-            for name in ("right", "drag", "scroll", "preview", "on_top", "logging"):
+            for name in ("right", "drag", "scroll", "preview", "on_top", "logging", "edge_assist"):
                 value = settings.get(name)
                 if isinstance(value, bool):
                     getattr(self, name).setChecked(value)
@@ -302,7 +319,7 @@ class DesktopWindow(QMainWindow):
     def _save_settings(self):
         settings = {
             name: getattr(self, name).isChecked()
-            for name in ("right", "drag", "scroll", "preview", "on_top", "logging")
+            for name in ("right", "drag", "scroll", "preview", "on_top", "logging", "edge_assist")
         }
         settings.update({name: choice.currentData() for name, choice in self._choices().items()})
         settings["span"] = self.tripod_controls.configuration().span
@@ -329,6 +346,32 @@ class DesktopWindow(QMainWindow):
         self.preview.toggled.connect(self._toggle_preview)
         self.on_top.toggled.connect(self._toggle_top)
         self.logging.toggled.connect(self._toggle_logging)
+        self.edge_assist.toggled.connect(self._toggle_edge_assist)
+
+    def _toggle_edge_assist(self, _):
+        self._save_settings()
+        self._refresh_framing()
+
+    def _refresh_framing(self):
+        control = self.controller
+        status = control.framing_status
+        enabled = self.edge_assist.isChecked() and not control.calibrating
+        self.framing_status_label.setText(control.framing_hint)
+        fresh_camera = control.source == "camera" and control.fresh()
+        self.framing_status_label.setVisible(enabled and fresh_camera)
+        edges = status.edges if enabled and fresh_camera and status.state == "edge" else ()
+        if self.camera_view.frame_edges != edges:
+            self.camera_view.frame_edges = edges
+            self.camera_view.update()
+        self.framing_overlay.set_hint(
+            control.framing_hint,
+            enabled
+            and control.active
+            and fresh_camera
+            and not control.calibrating
+            and not self.closing_requested
+            and status.state in ("edge", "lost", "waiting"),
+        )
 
     def _configure(self):
         screen = QApplication.primaryScreen()
@@ -451,10 +494,16 @@ class DesktopWindow(QMainWindow):
             lambda message: self._camera_failed(generation, message),
             Qt.ConnectionType.QueuedConnection,
         )
-        job.finished.connect(lambda: self._job_finished(job), Qt.ConnectionType.QueuedConnection)
+        job.finished.connect(self._job_finished, Qt.ConnectionType.QueuedConnection)
         job.start()
 
-    def _job_finished(self, job):
+    @Slot()
+    def _job_finished(self):
+        # Do not capture the soon-to-be-deleted QThread in its own signal callback.
+        job = self.sender()
+        job.succeeded.disconnect()
+        job.failed.disconnect()
+        job.finished.disconnect()
         self.jobs.discard(job)
         job.deleteLater()
         if self.closing_requested and not self.jobs:
@@ -571,6 +620,7 @@ class DesktopWindow(QMainWindow):
                         self.controller.source == "synthetic_demo",
                     )
             self.controller.tick()
+            self._refresh_framing()
             if now - self.last_render >= 0.10:
                 self._refresh()
                 self.last_render = now
@@ -582,6 +632,7 @@ class DesktopWindow(QMainWindow):
     def _refresh(self):
         control = self.controller
         self._refresh_calibration()
+        self._refresh_framing()
         active = control.active
         self.live_button.blockSignals(True)
         self.live_button.setChecked(active)
@@ -636,6 +687,7 @@ class DesktopWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def closeEvent(self, event):
+        self.framing_overlay.set_hint("", False)
         self.stop_camera()
         if not self.controller.close():
             self.controller.notice = "仍在重试松键，暂不能关闭；请先用实体鼠标松开按键。"
@@ -651,6 +703,7 @@ class DesktopWindow(QMainWindow):
         self.timer.stop()
         for worker in self.stopping_workers:
             worker.join(timeout=0.5)
+        self.framing_overlay.dispose()
         event.accept()
 
 
@@ -681,6 +734,7 @@ def run_desktop(workspace, demo=False, smoke_seconds=None, screenshot=None):
         # Also covers application-level Quit, not just the window's close button.
         window.stop_camera()
         window.controller.close()
+        window.framing_overlay.dispose()
         for sig, handler in previous_signals.items():
             signal.signal(sig, handler)
         lock.unlock()

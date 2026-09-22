@@ -7,7 +7,7 @@ from unittest.mock import Mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QEventLoop, QPoint, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, QSize, Qt, QTimer
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionSlider
 from test_desktop_control import FakeMouse, Rig
@@ -15,6 +15,7 @@ from test_desktop_control import FakeMouse, Rig
 from pinchpilot import desktop
 from pinchpilot.desktop_control import DesktopController
 from pinchpilot.domain import InputEvent
+from pinchpilot.framing import FramingStatus
 from pinchpilot.tripod_controls import TripodControls
 from pinchpilot.tripod_demo import synthetic_tripod
 from pinchpilot.vision import Packet
@@ -241,6 +242,7 @@ def test_settings_invalid_values_do_not_restore_control(application, tmp_path):
                 "rest_noise_x": float("nan"),
                 "rest_noise_y": 0.021,
                 "active": True,
+                "edge_assist": "false",
             }
         )
     )
@@ -249,6 +251,7 @@ def test_settings_invalid_values_do_not_restore_control(application, tmp_path):
         assert win.right.isChecked() and win.controller.engine.config.span == 0.3
         assert win.camera_index.value() == 0 and not win.controller.active
         assert win.control_hand.currentData() == "auto"
+        assert win.edge_assist.isChecked()
         assert win.controller.engine.config.motion_profile == "precise"
         assert win.controller.engine.config.rest_noise_x == 0
         assert win.controller.engine.config.rest_noise_y == 0
@@ -490,16 +493,20 @@ def test_minimized_window_continues_heartbeat_but_skips_preview(application, tmp
 
 def test_queued_model_job_completes_on_the_gui_thread(window, application):
     from PySide6.QtCore import QThread
+    from shiboken6 import isValid
 
     seen = []
     window._job(
         lambda: 7, lambda value: seen.append((value, QThread.currentThread())), window.generation
     )
+    job = next(iter(window.jobs))
     deadline = time.monotonic() + 3
     while window.jobs and time.monotonic() < deadline:
         application.processEvents()
         time.sleep(0.005)
     assert not window.jobs and seen == [(7, application.thread())]
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not isValid(job)
 
 
 def test_metrics_show_native_sends_not_preview_gesture_counts(window):
@@ -514,3 +521,90 @@ def test_metrics_show_native_sends_not_preview_gesture_counts(window):
     window._refresh()
     assert "左 1" in window.metrics_labels["buttons"].text()
     assert window.rig.output.events.count(InputEvent("down", *window.rig.output.point)) == 1
+
+
+def test_edge_assist_preference_persists_without_stopping_control(window):
+    assert window.edge_assist.isChecked()
+    window.rig.live()
+    window.rig.frames(4, contact=0.1)
+    window.controller.framing.status = FramingStatus("edge", ("bottom",))
+    window._refresh()
+    assert window.framing_overlay.isVisible()
+    window.edge_assist.setChecked(False)
+    assert window.controller.active and window.rig.output.down
+    assert not window.framing_overlay.isVisible()
+    assert window.framing_status_label.isHidden()
+    assert window.camera_view.frame_edges == ()
+    assert json.loads(window.settings_path.read_text())["edge_assist"] is False
+    second = desktop.DesktopWindow(window.workspace)
+    try:
+        second.timer.stop()
+        assert not second.edge_assist.isChecked()
+        assert second.framing_status_label.isHidden()
+        assert not second.framing_overlay.isVisible()
+    finally:
+        second.close()
+
+
+@pytest.mark.parametrize("state", ["edge", "lost", "waiting"])
+def test_framing_overlay_only_appears_during_live_control(window, state):
+    window.controller.set_source("camera")
+    window.rig.frames(8)
+    edges = ("left", "bottom") if state == "edge" else ()
+    window.controller.framing.status = FramingStatus(state, edges)
+    window._refresh()
+    assert not window.framing_overlay.isVisible()
+    assert window.framing_status_label.text() == window.controller.framing_hint
+    window.controller.enable()
+    window._refresh()
+    assert window.framing_overlay.isVisible()
+    assert window.framing_overlay.hint.text() == window.controller.framing_hint
+    assert window.camera_view.frame_edges == edges
+    window.controller.framing.status = FramingStatus("clear")
+    window._refresh()
+    assert not window.framing_overlay.isVisible()
+    assert window.camera_view.frame_edges == ()
+
+
+@pytest.mark.parametrize("reason", ["stop", "source", "stale", "calibration", "camera_error"])
+def test_framing_overlay_hides_when_live_control_is_interrupted(window, reason):
+    window.rig.live()
+    window.controller.framing.status = FramingStatus("edge", ("right",))
+    window._refresh()
+    assert window.framing_overlay.isVisible()
+    if reason == "stop":
+        window.stop_control()
+    elif reason == "source":
+        window.start_demo()
+    elif reason == "stale":
+        window.rig.clock.now += 0.3
+        window._tick()
+    elif reason == "calibration":
+        window._toggle_calibration()
+    else:
+        window.worker = Mock(failure="test camera failure")
+        window.worker.is_alive.return_value = False
+        window._tick()
+    assert not window.framing_overlay.isVisible()
+    if reason == "calibration":
+        assert window.framing_status_label.isHidden()
+        assert window.camera_view.frame_edges == ()
+
+
+def test_overlay_survives_main_window_minimization_and_close_disposes_it(window, application):
+    window.rig.live()
+    window.rig.frames(18, contact=0.1)
+    assert window.controller.result.state == "DRAG"
+    window.controller.framing.status = FramingStatus("edge", ("bottom",))
+    window.show()
+    window._refresh()
+    assert "保持食拇" in window.framing_overlay.hint.text()
+    window.showMinimized()
+    application.processEvents()
+    window._refresh_framing()
+    assert window.framing_overlay.isVisible()
+    window.hide()
+    window._refresh_framing()
+    assert window.framing_overlay.isVisible()
+    window.close()
+    assert window.framing_overlay.disposed
