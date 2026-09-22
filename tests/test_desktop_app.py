@@ -7,14 +7,15 @@ from unittest.mock import Mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer
-from PySide6.QtTest import QTest
+from PySide6.QtCore import QEventLoop, QPoint, QSize, Qt, QTimer
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionSlider
 from test_desktop_control import FakeMouse, Rig
 
 from pinchpilot import desktop
 from pinchpilot.desktop_control import DesktopController
 from pinchpilot.domain import InputEvent
+from pinchpilot.tripod_controls import TripodControls
 from pinchpilot.tripod_demo import synthetic_tripod
 from pinchpilot.vision import Packet
 
@@ -45,6 +46,156 @@ def test_startup_is_off_and_synthetic_demo_cannot_activate_mouse(window, monkeyp
     window._toggle_live(True)
     window.controller.output_factory.assert_not_called()
     assert not window.live_button.isChecked()
+
+
+def test_motion_profile_defaults_and_screen_uses_logical_size(window, monkeypatch):
+    controls = TripodControls()
+    try:
+        assert controls.configuration().motion_profile == "classic"
+        assert window.controller.engine.config.motion_profile == "precise"
+        monkeypatch.setattr(
+            desktop.QApplication, "primaryScreen", lambda: Mock(size=lambda: QSize(1512, 982))
+        )
+        window._configure()
+        config = window.controller.engine.config
+        assert (config.screen_width, config.screen_height) == (1512, 982)
+        window.tripod_controls.motion_profile.setCurrentIndex(0)
+        assert window.controller.engine.config.motion_profile == "classic"
+    finally:
+        controls.close()
+
+
+@pytest.mark.parametrize(
+    "x,y",
+    [(float("nan"), 0), (0, float("inf")), (-0.1, 0), (0, 0.021), (True, 0), (0, "0.001")],
+)
+def test_invalid_rest_noise_is_ignored_without_settings_signal(application, x, y):
+    controls = TripodControls()
+    try:
+        spy = QSignalSpy(controls.changed)
+        assert controls.restore_noise(0.001, 0.002)
+        assert not controls.restore_noise(x, y)
+        assert (controls.rest_noise_x, controls.rest_noise_y) == (0.001, 0.002)
+        assert spy.count() == 0
+    finally:
+        controls.close()
+
+
+def test_motion_profile_and_calibration_preferences_survive_restart(window):
+    controls = window.tripod_controls
+    controls.restore_noise(0.001, 0.002)
+    controls.motion_profile.setCurrentIndex(controls.motion_profile.findData("adaptive"))
+    saved = json.loads(window.settings_path.read_text())
+    assert saved["motion_profile"] == "adaptive"
+    assert saved["rest_noise_x"] == 0.001 and saved["rest_noise_y"] == 0.002
+    second = desktop.DesktopWindow(window.workspace)
+    try:
+        second.timer.stop()
+        config = second.controller.engine.config
+        assert config.motion_profile == "adaptive"
+        assert (config.rest_noise_x, config.rest_noise_y) == (0.001, 0.002)
+        assert "已恢复" in second.calibration_status.text()
+        assert not second.controller.active and not second.controller.calibrating
+    finally:
+        second.close()
+
+
+def test_stop_or_motion_setting_change_cancels_calibration_without_native_output(window):
+    window.controller.set_source("camera")
+    window.rig.frames(8)
+    window._refresh()
+    window.calibration_button.click()
+    assert window.controller.calibrating and not window.controller.active
+    window.stop_button.click()
+    assert not window.controller.calibrating
+    window.calibration_button.click()
+    assert window.controller.calibrating
+    window.tripod_controls.motion_profile.setCurrentIndex(0)
+    assert not window.controller.calibrating
+    assert not window.calibration_button.isEnabled()
+    assert "精细 / 自适应" in window.calibration_status.text()
+    assert not window.rig.created and not window.rig.output.events
+
+
+def test_completed_zero_noise_calibration_still_has_clearable_result(window):
+    window.controller.set_source("camera")
+    window.rig.frames(8)
+    window._refresh()
+    window.calibration_button.click()
+    window.rig.frames(183)
+    window._refresh()
+    assert window.controller.calibration_result is not None
+    assert window.calibration_progress.value() == 100
+    assert window.clear_calibration_button.isEnabled()
+    assert window.controller.engine.config.rest_noise_x == 0
+    window.clear_calibration_button.click()
+    assert window.controller.calibration_result is None
+    assert window.calibration_progress.value() == 0
+    assert "尚未校准" in window.calibration_status.text()
+    assert not window.rig.created and not window.rig.output.events
+
+
+def test_calibration_ui_disables_control_tracks_progress_and_saves_once(window, monkeypatch):
+    class CalibrationController:
+        """Exercise UI transitions independently of camera calibration sampling."""
+
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.calibrating = False
+            self.calibration_progress = 0.0
+            self.calibration_result = None
+
+        def __getattr__(self, name):
+            return getattr(self.delegate, name)
+
+        def start_calibration(self):
+            self.delegate.stop("calibration")
+            self.calibrating = True
+
+        def cancel_calibration(self):
+            self.calibrating = False
+            self.calibration_progress = 0.0
+
+    control = CalibrationController(window.controller)
+    window.controller = control
+    assert not window.calibration_button.isEnabled()
+    control.set_source("camera")
+    window.rig.frames(8)
+    window._refresh()
+    assert window.calibration_button.isEnabled() and window.live_button.isEnabled()
+    window.calibration_button.click()
+    assert control.calibrating and not window.live_button.isEnabled()
+    assert "取消" in window.calibration_button.text()
+    control.calibration_progress = 0.5
+    window._refresh()
+    assert window.calibration_progress.value() == 50
+    window.calibration_button.click()
+    assert not control.calibrating and window.live_button.isEnabled()
+    window.calibration_button.click()
+    control.calibrating = False
+    control.calibration_progress = 1.0
+    control.calibration_result = {
+        "rest_noise_x": 0.0004,
+        "rest_noise_y": 0.0006,
+        "noise_px": 3.2,
+        "samples": 180,
+    }
+    save = Mock(wraps=window._save_settings)
+    monkeypatch.setattr(window, "_save_settings", save)
+    window._refresh()
+    window._refresh()
+    save.assert_called_once()
+    assert window.calibration_progress.value() == 100
+    assert "3.2 逻辑像素" in window.calibration_status.text()
+    saved = json.loads(window.settings_path.read_text())
+    assert saved["rest_noise_x"] == 0.0004 and saved["rest_noise_y"] == 0.0006
+    window.clear_calibration_button.click()
+    window._refresh()
+    assert window.controller.engine.config.rest_noise_x == 0
+    assert window.controller.engine.config.rest_noise_y == 0
+    assert window.tripod_controls.rest_noise_x == 0
+    assert "尚未校准" in window.calibration_status.text()
+    assert json.loads(window.settings_path.read_text())["rest_noise_x"] == 0
 
 
 def test_controls_persist_only_preferences_and_restart_requires_explicit_enable(
@@ -86,6 +237,9 @@ def test_settings_invalid_values_do_not_restore_control(application, tmp_path):
                 "span": 500,
                 "camera_index": 999,
                 "control_hand": "Both",
+                "motion_profile": "unknown",
+                "rest_noise_x": float("nan"),
+                "rest_noise_y": 0.021,
                 "active": True,
             }
         )
@@ -95,6 +249,9 @@ def test_settings_invalid_values_do_not_restore_control(application, tmp_path):
         assert win.right.isChecked() and win.controller.engine.config.span == 0.3
         assert win.camera_index.value() == 0 and not win.controller.active
         assert win.control_hand.currentData() == "auto"
+        assert win.controller.engine.config.motion_profile == "precise"
+        assert win.controller.engine.config.rest_noise_x == 0
+        assert win.controller.engine.config.rest_noise_y == 0
     finally:
         win.close()
 
@@ -154,6 +311,8 @@ def test_sensitivity_restores_old_and_continuous_settings(application, tmp_path,
         assert win.tripod_controls.sensitivity.value() == percent
         assert win.controller.engine.config.span == pytest.approx(span)
         assert win.controller.engine.config.deadband == 0.014
+        assert win.controller.engine.config.motion_profile == "classic"
+        assert json.loads(win.settings_path.read_text())["motion_profile"] == "classic"
         win.tripod_controls.sensitivity.setValue(42)
         saved = json.loads(win.settings_path.read_text())
         assert saved["span"] == pytest.approx(0.3 / 0.42)

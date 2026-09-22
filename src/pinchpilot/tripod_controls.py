@@ -25,6 +25,18 @@ class TripodControls(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         form = QFormLayout()
+        self.motion_profile = QComboBox()
+        for label, value in (
+            ("原版 · 对照", "classic"),
+            ("精细 · 小幅微调", "precise"),
+            ("自适应 · 实验", "adaptive"),
+        ):
+            self.motion_profile.addItem(label, value)
+        self.motion_profile.setToolTip(
+            "原版保留已有移动手感；精细模式改善慢速微调；自适应模式随移动速度调整灵敏度。"
+        )
+        self.rest_noise_x = 0.0
+        self.rest_noise_y = 0.0
         speed = QWidget()
         speed_layout = QVBoxLayout(speed)
         speed_layout.setContentsMargins(0, 0, 0, 0)
@@ -84,6 +96,7 @@ class TripodControls(QWidget):
         for label, value in (("慢 · 精细翻动", 30.0), ("标准", 60.0), ("快 · 长页面", 120.0)):
             self.scroll_speed.addItem(label, value)
         self.scroll_speed.setCurrentIndex(1)
+        form.addRow("移动模式", self.motion_profile)
         form.addRow("移动灵敏度", speed)
         form.addRow("抗抖强度", self.stability)
         form.addRow("食拇接触", self.contact)
@@ -106,6 +119,7 @@ class TripodControls(QWidget):
         hint.setObjectName("subtitle")
         layout.addWidget(hint)
         for choice in (
+            self.motion_profile,
             self.stability,
             self.contact,
             self.right_contact,
@@ -132,10 +146,26 @@ class TripodControls(QWidget):
             return
         self.sensitivity.setValue(round(30 / span))
 
+    def restore_noise(self, x, y):
+        """Restore valid calibration without emitting a settings change."""
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 <= value <= 0.02
+            for value in (x, y)
+        ):
+            return False
+        self.rest_noise_x, self.rest_noise_y = float(x), float(y)
+        return True
+
     def configuration(self):
         touch = self.contact.currentData()
         right_touch = self.right_contact.currentData()
         return TripodConfig(
+            motion_profile=self.motion_profile.currentData(),
+            rest_noise_x=self.rest_noise_x,
+            rest_noise_y=self.rest_noise_y,
             span=30 / self.sensitivity.value(),
             deadband=self.stability.currentData(),
             touch_ratio=touch,

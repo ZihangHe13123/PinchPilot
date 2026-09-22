@@ -28,4 +28,5 @@ jobs:
       - run: uv run pinchpilot desktop --demo --smoke-seconds 2
       - run: uv run python scripts/check_single_finger.py
       - run: uv run python scripts/check_tripod.py
+      - run: uv run python scripts/check_motion_tuning.py
       - run: uv build

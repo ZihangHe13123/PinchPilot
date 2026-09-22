@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -50,6 +51,8 @@ class DesktopWindow(QMainWindow):
         self.demo_started = None
         self.last_render = 0
         self.control_hand_status = "相机关闭"
+        self._calibration_seen = None
+        self._calibration_summary = ""
         self.setWindowTitle(f"PinchPilot {__version__} · 桌面测试版")
         self.resize(980, 700)
         self._build_ui()
@@ -185,8 +188,37 @@ class DesktopWindow(QMainWindow):
         advanced_layout = QVBoxLayout(self.advanced)
         advanced_layout.setContentsMargins(0, 0, 0, 0)
         self.tripod_controls = TripodControls()
+        self.tripod_controls.motion_profile.setCurrentIndex(
+            self.tripod_controls.motion_profile.findData("precise")
+        )
         self.tripod_controls.probe_button.hide()
         advanced_layout.addWidget(self.tripod_controls)
+        self.calibration_button = QPushButton("6 秒静止校准")
+        self.calibration_button.clicked.connect(self._toggle_calibration)
+        advanced_layout.addWidget(self.calibration_button)
+        self.calibration_progress = QProgressBar()
+        self.calibration_progress.setRange(0, 100)
+        self.calibration_progress.setValue(0)
+        self.calibration_progress.setStyleSheet(
+            "QProgressBar { min-height: 18px; border: 1px solid #31546b; border-radius: 4px;"
+            "background: #10202e; color: #d8e6ed; text-align: center; }"
+            "QProgressBar::chunk { background: #177f79; border-radius: 3px; }"
+        )
+        advanced_layout.addWidget(self.calibration_progress)
+        self.calibration_status = QLabel()
+        self.calibration_status.setObjectName("subtitle")
+        self.calibration_status.setWordWrap(True)
+        advanced_layout.addWidget(self.calibration_status)
+        self.clear_calibration_button = QPushButton("清除静止校准")
+        self.clear_calibration_button.clicked.connect(self._clear_calibration)
+        advanced_layout.addWidget(self.clear_calibration_button)
+        calibration_hint = QLabel(
+            "支撑前臂，拇中捏住并保持静止，食指和无名指移开；校准期间暂停鼠标控制。"
+            "仅测量静止抖动，不代表动作识别准确率。"
+        )
+        calibration_hint.setObjectName("subtitle")
+        calibration_hint.setWordWrap(True)
+        advanced_layout.addWidget(calibration_hint)
         camera_row = QHBoxLayout()
         camera_row.addWidget(QLabel("摄像头编号"))
         self.camera_index = QSpinBox()
@@ -216,12 +248,20 @@ class DesktopWindow(QMainWindow):
 
     def _reveal_sensitivity(self):
         if self.advanced.isVisible():
-            self.settings_area.ensureWidgetVisible(self.tripod_controls.sensitivity, 0, 55)
+            self.settings_area.verticalScrollBar().setValue(self.advanced.y())
+            self.settings_area.ensureWidgetVisible(self.tripod_controls.motion_profile, 0, 35)
 
     def _choices(self):
         return {
             name: getattr(self.tripod_controls, name)
-            for name in ("stability", "contact", "right_contact", "drag_hold", "scroll_speed")
+            for name in (
+                "motion_profile",
+                "stability",
+                "contact",
+                "right_contact",
+                "drag_hold",
+                "scroll_speed",
+            )
         }
 
     def _restore_settings(self):
@@ -231,6 +271,11 @@ class DesktopWindow(QMainWindow):
             settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
             if not isinstance(settings, dict):
                 raise ValueError("settings must be an object")
+            if "motion_profile" not in settings:
+                # Preserve existing users' motion until they opt into a new profile.
+                self.tripod_controls.motion_profile.setCurrentIndex(
+                    self.tripod_controls.motion_profile.findData("classic")
+                )
             for name in ("right", "drag", "scroll", "preview", "on_top", "logging"):
                 value = settings.get(name)
                 if isinstance(value, bool):
@@ -240,6 +285,9 @@ class DesktopWindow(QMainWindow):
                 if index >= 0:
                     choice.setCurrentIndex(index)
             self.tripod_controls.restore_span(settings.get("span", 0.3))
+            self.tripod_controls.restore_noise(
+                settings.get("rest_noise_x", 0.0), settings.get("rest_noise_y", 0.0)
+            )
             index = settings.get("camera_index", 0)
             if type(index) is int and 0 <= index <= 8:
                 self.camera_index.setValue(index)
@@ -258,6 +306,8 @@ class DesktopWindow(QMainWindow):
         }
         settings.update({name: choice.currentData() for name, choice in self._choices().items()})
         settings["span"] = self.tripod_controls.configuration().span
+        settings["rest_noise_x"] = self.tripod_controls.rest_noise_x
+        settings["rest_noise_y"] = self.tripod_controls.rest_noise_y
         settings["camera_index"] = self.camera_index.value()
         settings["control_hand"] = self.control_hand.currentData()
         try:
@@ -281,9 +331,13 @@ class DesktopWindow(QMainWindow):
         self.logging.toggled.connect(self._toggle_logging)
 
     def _configure(self):
+        screen = QApplication.primaryScreen()
+        size = screen.size() if screen is not None else None
         self.controller.configure(
             replace(
                 self.tripod_controls.configuration(),
+                screen_width=float(size.width()) if size else 1920.0,
+                screen_height=float(size.height()) if size else 1080.0,
                 right_enabled=self.right.isChecked(),
                 drag_enabled=self.drag.isChecked(),
                 scroll_enabled=self.scroll.isChecked(),
@@ -291,6 +345,73 @@ class DesktopWindow(QMainWindow):
         )
         self._save_settings()
         self._refresh()
+
+    def _toggle_calibration(self):
+        try:
+            if self.controller.calibrating:
+                self.controller.cancel_calibration()
+            else:
+                self.controller.start_calibration()
+        except Exception as error:
+            self.controller.notice = f"校准未启动：{error}"
+        self._refresh()
+        if self.controller.calibrating:
+            QTimer.singleShot(0, self._reveal_calibration)
+
+    def _reveal_calibration(self):
+        if self.advanced.isVisible():
+            self.settings_area.verticalScrollBar().setValue(
+                self.advanced.y() + self.calibration_button.y() - 35
+            )
+
+    def _clear_calibration(self):
+        self._calibration_seen = self.controller.calibration_result
+        self._calibration_summary = ""
+        self.tripod_controls.restore_noise(0.0, 0.0)
+        self._configure()
+        self.controller.notice = "已清除静止校准；再次启用鼠标控制后生效。"
+        self._refresh()
+
+    def _refresh_calibration(self):
+        control = self.controller
+        result = control.calibration_result
+        if result is not None and result is not self._calibration_seen:
+            self._calibration_seen = result
+            if self.tripod_controls.restore_noise(result["rest_noise_x"], result["rest_noise_y"]):
+                self._calibration_summary = f"已校准 · 采集时波动 {result['noise_px']:.1f} 逻辑像素 · {result['samples']} 帧"
+                self._save_settings()
+        calibrating = control.calibrating
+        classic = self.tripod_controls.motion_profile.currentData() == "classic"
+        self.calibration_button.setText("取消静止校准" if calibrating else "6 秒静止校准")
+        self.calibration_button.setToolTip(
+            "静止校准适用于精细 / 自适应模式" if classic else "准备 1 秒、静止采集 5 秒"
+        )
+        self.calibration_button.setEnabled(
+            calibrating
+            or (
+                not classic
+                and control.source == "camera"
+                and control.fresh()
+                and not control.pending_release
+            )
+        )
+        progress = control.calibration_progress if calibrating else bool(self._calibration_summary)
+        self.calibration_progress.setValue(round(progress * 100))
+        calibrated = bool(self.tripod_controls.rest_noise_x or self.tripod_controls.rest_noise_y)
+        self.clear_calibration_button.setEnabled(
+            calibrated or calibrating or bool(self._calibration_summary)
+        )
+        if calibrating:
+            text = "采集中 · 保持拇中捏合并静止；食指和无名指移开。"
+        elif classic:
+            text = "原版用于对照；静止校准适用于精细 / 自适应模式。"
+        elif self._calibration_summary:
+            text = self._calibration_summary
+        elif calibrated:
+            text = "已恢复静止校准 · 可在当前姿势下重新采集。"
+        else:
+            text = "尚未校准 · 先启动相机，并让控制手清晰可见。"
+        self.calibration_status.setText(text)
 
     def _camera_changed(self):
         self.stop_camera()
@@ -460,13 +581,17 @@ class DesktopWindow(QMainWindow):
 
     def _refresh(self):
         control = self.controller
+        self._refresh_calibration()
         active = control.active
         self.live_button.blockSignals(True)
         self.live_button.setChecked(active)
         self.live_button.blockSignals(False)
         self.live_button.setText("关闭鼠标控制" if active else "启用鼠标控制")
         self.live_button.setEnabled(
-            not control.pending_release and control.source == "camera" and control.fresh()
+            not control.calibrating
+            and not control.pending_release
+            and control.source == "camera"
+            and control.fresh()
         )
         self.camera_button.setText("停止相机" if self.worker or self.camera_pending else "启动相机")
         source = {"none": "相机关闭", "camera": "实时相机", "synthetic_demo": "合成演示"}[

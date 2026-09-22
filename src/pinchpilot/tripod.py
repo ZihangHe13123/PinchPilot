@@ -8,11 +8,17 @@ import numpy as np
 from .domain import EngineResult, HandFrame, InputEvent, Prediction
 from .features import extract
 from .filtering import StablePointer
+from .motion import TunedPointer
 
 
 @dataclass(frozen=True)
 class TripodConfig:
     mode: str = "tripod"
+    motion_profile: str = "classic"
+    screen_width: float = 1920.0
+    screen_height: float = 1080.0
+    rest_noise_x: float = 0.0
+    rest_noise_y: float = 0.0
     span: float = 0.30
     deadband: float = 0.008
     filter_cutoff: float = 3.0
@@ -45,10 +51,20 @@ class TripodConfig:
             for v in (self.right_enabled, self.drag_enabled, self.scroll_enabled)
         ):
             raise ValueError("右键、拖拽和滚轮开关必须为布尔值")
-        if self.mode != "tripod" or not all(
-            math.isfinite(v) for k, v in vars(self).items() if k != "mode"
+        if (
+            self.mode != "tripod"
+            or self.motion_profile not in ("classic", "precise", "adaptive")
+            or not all(
+                math.isfinite(v)
+                for k, v in vars(self).items()
+                if k not in ("mode", "motion_profile")
+            )
         ):
             raise ValueError("三指配置无效")
+        if not (100 <= self.screen_width <= 32768 and 100 <= self.screen_height <= 32768):
+            raise ValueError("主屏逻辑尺寸无效")
+        if not (0 <= self.rest_noise_x <= 0.02 and 0 <= self.rest_noise_y <= 0.02):
+            raise ValueError("静止噪声校准无效")
         if not 0.15 <= self.span <= 3.0 or not 0 <= self.deadband <= 0.03:
             raise ValueError("三指移动范围或抗抖强度无效")
         if not 0.5 <= self.filter_cutoff <= 10 or not 0 <= self.filter_beta <= 20:
@@ -240,7 +256,11 @@ class TripodEngine:
         self.pointer = self.pointer_anchor
         self.raw_pointer = self.pointer_anchor
         cfg = self.config
-        self.stabilizer = StablePointer(cfg.deadband, cfg.filter_cutoff, cfg.filter_beta)
+        self.stabilizer = (
+            StablePointer(cfg.deadband, cfg.filter_cutoff, cfg.filter_beta)
+            if cfg.motion_profile == "classic"
+            else TunedPointer(cfg)
+        )
         self.stabilizer.update(self.pointer, timestamp)
 
     def _disarm(self, f, frame, hint=None):
