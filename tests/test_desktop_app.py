@@ -31,6 +31,10 @@ def window(application, tmp_path):
     rig = Rig(tmp_path / "reports/desktop_trials")
     win = desktop.DesktopWindow(tmp_path, controller=rig.control)
     win.timer.stop()
+    # Preserve the original position-mode workflows as regression coverage.
+    win.tripod_controls.pointer_basis.setCurrentIndex(
+        win.tripod_controls.pointer_basis.findData("position")
+    )
     win.rig = rig
     yield win
     rig.output.fail_close = False

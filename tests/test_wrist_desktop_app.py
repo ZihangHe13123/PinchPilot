@@ -32,6 +32,9 @@ def window(application, tmp_path):
     rig = Rig(tmp_path / "reports/desktop_trials")
     win = desktop.DesktopWindow(tmp_path, controller=rig.control)
     win.timer.stop()
+    win.tripod_controls.pointer_basis.setCurrentIndex(
+        win.tripod_controls.pointer_basis.findData("position")
+    )
     win.rig = rig
     yield win
     rig.output.fail_close = False
@@ -162,7 +165,12 @@ def test_corrupt_saved_wrist_calibration_requires_calibration_before_enable(appl
     data.mkdir()
     (data / "desktop-settings.json").write_text(
         json.dumps(
-            {"pointer_basis": "wrist", "motion_profile": "precise", "wrist_calibration": [0] * 15}
+            {
+                "pointer_basis": "wrist",
+                "motion_profile": "precise",
+                "wrist_calibration": [0] * 15,
+                "unified_mode_seen": True,
+            }
         )
     )
     rig = Rig(tmp_path / "reports")

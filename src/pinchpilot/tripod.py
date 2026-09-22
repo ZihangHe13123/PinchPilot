@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from .compatible import CompatiblePoint
 from .domain import EngineResult, HandFrame, InputEvent, Prediction
 from .features import extract
 from .filtering import StablePointer
@@ -64,7 +65,7 @@ class TripodConfig:
         if (
             self.mode != "tripod"
             or self.motion_profile not in ("classic", "precise", "adaptive")
-            or self.pointer_basis not in ("position", "wrist")
+            or self.pointer_basis not in ("position", "wrist", "unified")
             or not all(
                 math.isfinite(v)
                 for k, v in vars(self).items()
@@ -120,7 +121,9 @@ class TripodFeatures:
     scroll_pose: bool = False
 
 
-def tripod_features(frame: HandFrame, *, spatial_scale=False) -> TripodFeatures | None:
+def tripod_features(
+    frame: HandFrame, *, spatial_scale=False, spatial_grip=False
+) -> TripodFeatures | None:
     if len(frame.landmarks) != 21 or not math.isfinite(frame.aspect) or frame.aspect <= 0:
         return None
     p = np.asarray(frame.landmarks, dtype=float)
@@ -137,7 +140,12 @@ def tripod_features(frame: HandFrame, *, spatial_scale=False) -> TripodFeatures 
     )
     if scale < 0.025:
         return None
-    grip = float(np.linalg.norm(xyz[4] - xyz[12]) / scale)
+    grip_scale = (
+        float((np.linalg.norm(xyz[5] - xyz[17]) + np.linalg.norm(xyz[0] - xyz[9])) / 2)
+        if spatial_grip
+        else scale
+    )
+    grip = float(np.linalg.norm(xyz[4] - xyz[12]) / grip_scale)
     # Middle finger gates movement only. Contact is a thumb-index distance
     # proxy with estimated depth, not a physical contact/pressure sensor.
     contact = float(np.linalg.norm(xyz[8] - xyz[4]) / scale)
@@ -176,6 +184,9 @@ class TripodEngine:
         self.last_time = self.last_seen = None
         self.last_hand = ""
         self.features = None
+        self.current_frame = None
+        self.compatible_point = None
+        self.grip_pending_since = None
         self.camera_anchor = None
         self.wrist_anchor = self.wrist_pose = None
         self.pointer_anchor = self.pointer or (0.5, 0.5)
@@ -284,15 +295,20 @@ class TripodEngine:
 
     def _anchor(self, f, timestamp):
         self.camera_anchor = f.point
+        self.compatible_point = (
+            CompatiblePoint(self.current_frame, f.point, self.config)
+            if self.config.pointer_basis == "unified"
+            else None
+        )
         if self.wrist_pose is not None:
             self.wrist_anchor = self.wrist_pose.copy()
         self.pointer_anchor = self.pointer or (0.5, 0.5)
         self.pointer = self.pointer_anchor
         self.raw_pointer = self.pointer_anchor
         cfg = self.config
-        if cfg.pointer_basis == "wrist":
-            # Wrist displacement uses constant gain; position calibration has
-            # different units and must never silently change angular filtering.
+        if cfg.pointer_basis in ("wrist", "unified"):
+            # Both trials use constant gain. Old raw-position noise calibration
+            # must not silently change their different input/filtering paths.
             cfg = replace(cfg, motion_profile="precise", rest_noise_x=0.0, rest_noise_y=0.0)
         self.stabilizer = (
             StablePointer(cfg.deadband, cfg.filter_cutoff, cfg.filter_beta)
@@ -309,6 +325,8 @@ class TripodEngine:
         return self._result(stopped.events, hint, cancelled=stopped.cancelled)
 
     def _move(self, timestamp):
+        if self.grip_pending_since is not None:
+            return self._result(hint="捏合暂不稳定 · 指针已暂停，捏稳后原地继续")
         point = self.stabilizer.update(self.raw_pointer, timestamp)
         self.pointer = tuple(min(1.0, max(0.0, v)) for v in point)
         return self._result([InputEvent("move", *self.pointer)])
@@ -468,9 +486,24 @@ class TripodEngine:
             return self._result()
         cfg = self.config
         wrist = cfg.pointer_basis == "wrist"
-        f = tripod_features(frame, spatial_scale=wrist)
+        unified = cfg.pointer_basis == "unified"
+        f = tripod_features(frame, spatial_scale=wrist, spatial_grip=unified)
         if f is None:
             return self.reset()
+        # Estimated palm depth can inflate the 3-D scale. Visible fingertip
+        # separation independently vetoes a grip; depth cannot authorize an
+        # obviously open hand. Use a 2-D numerator here, not the old mixed ratio.
+        projected_grip = (
+            math.hypot(
+                (frame.landmarks[4][0] - frame.landmarks[12][0]) * frame.aspect,
+                frame.landmarks[4][1] - frame.landmarks[12][1],
+            )
+            / f.scale
+            if unified
+            else 0.0
+        )
+        visible_grip = not unified or projected_grip <= cfg.grip_release
+        visibly_open = unified and projected_grip >= max(0.64, cfg.grip_release + 0.12)
         if wrist:
             if self.wrist_mapping is None:
                 return self._disarm(f, frame, "先完成三步腕动方向校准，再启用鼠标")
@@ -500,6 +533,7 @@ class TripodEngine:
             return self._disarm(f, frame, "追踪发生跳变 · 暂停移动，请移开食指重新捏住")
         self.last_time = self.last_seen = t
         self.features, self.last_hand = f, frame.handedness
+        self.current_frame = frame
         scrolling = self._scroll(f, frame)
         if scrolling is not None:
             return scrolling
@@ -508,7 +542,7 @@ class TripodEngine:
         )
         self._update_right_ready(f, t)
         if self.state == "WAIT_GRIP":
-            if f.grip > cfg.grip_engage or f.contact < cfg.clear_ratio:
+            if f.grip > cfg.grip_engage or not visible_grip or f.contact < cfg.clear_ratio:
                 self.arm_since = None
                 return self._result()
             if self.arm_since is None:
@@ -519,11 +553,39 @@ class TripodEngine:
             self.motion_engaged = True
             self.state = "CONTROL"
             return self._result([InputEvent("move", *self.pointer)])
-        if self.motion_engaged and f.grip > cfg.grip_release:
+        release_grip = f.grip > cfg.grip_release or visibly_open
+        if unified and self.motion_engaged:
+            if release_grip:
+                if self.grip_pending_since is None:
+                    self.grip_pending_since = t
+                # An uncertain grip never moves the pointer. A clearly open
+                # middle finger still freezes immediately using the old clutch.
+                release_grip = (
+                    visibly_open
+                    or f.grip >= max(0.64, cfg.grip_release + 0.12)
+                    or t - self.grip_pending_since >= 0.08
+                )
+            elif self.grip_pending_since is not None:
+                self.grip_pending_since = None
+                self._anchor(f, t)  # Discard motion during the uncertain frames.
+            if self.grip_pending_since is not None and not release_grip and not self.left_down:
+                # The grace period is only for motion continuity, never extra
+                # evidence for a new click. Preserve the original release-transition
+                # rule: touching while middle contact is uncertain must clear first.
+                self.touch_since = self.clear_since = None
+                if self.state == "RIGHT_TOUCHED":
+                    return self._result()
+                if self.state == "RIGHT_APPROACH" or self.require_both_clear or right_near:
+                    self._wait_clear(both=True)
+                elif f.contact < cfg.clear_ratio:
+                    self._wait_clear()
+                return self._result(hint="捏合暂不稳定 · 指针已暂停，请先分开点击手指")
+        if self.motion_engaged and release_grip:
             # Releasing the middle finger freezes before any midpoint update.
             # Do not turn a contact that started during this transition into a
             # click, or rearm a contact that has already clicked.
             self.motion_engaged = False
+            self.grip_pending_since = None
             self.raw_pointer = None
             self.arm_since = self.touch_since = self.clear_since = None
             if not self.left_down:
@@ -534,9 +596,13 @@ class TripodEngine:
                 self.state = "FROZEN" if f.contact >= cfg.clear_ratio else "WAIT_CLEAR"
                 return self._result()
         if not self.motion_engaged:
-            if f.grip <= cfg.grip_engage and (
-                (self.left_down and f.contact < cfg.clear_ratio)
-                or (self.state == "FROZEN" and f.contact >= cfg.clear_ratio and not right_near)
+            if (
+                f.grip <= cfg.grip_engage
+                and visible_grip
+                and (
+                    (self.left_down and f.contact < cfg.clear_ratio)
+                    or (self.state == "FROZEN" and f.contact >= cfg.clear_ratio and not right_near)
+                )
             ):
                 if self.arm_since is None:
                     self.arm_since = t
@@ -550,10 +616,15 @@ class TripodEngine:
             else:
                 self.arm_since = None
         else:
+            point = (
+                self.compatible_point.update(frame, f.point)
+                if self.compatible_point is not None
+                else f.point
+            )
             displacement = (
                 self.wrist_mapping.displacement(self.wrist_pose, self.wrist_anchor)
                 if wrist
-                else tuple(v - c for v, c in zip(f.point, self.camera_anchor))
+                else tuple(v - c for v, c in zip(point, self.camera_anchor))
             )
             self.raw_pointer = tuple(
                 a + delta / cfg.span for a, delta in zip(self.pointer_anchor, displacement)

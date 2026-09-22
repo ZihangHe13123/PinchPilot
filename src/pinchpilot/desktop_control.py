@@ -63,7 +63,9 @@ class DesktopController:
         if self.source != "camera" or not self.fresh():
             raise RuntimeError("先启动实时相机预览，再进行静止校准")
         if self.engine.config.pointer_basis != "position":
-            raise RuntimeError("静止噪声校准仅用于指尖位置模式；腕动请使用三步方向校准")
+            raise RuntimeError(
+                "静止噪声校准仅用于指尖位置对照；兼容定位无需此校准，腕动请使用三步方向校准"
+            )
         if self.engine.config.motion_profile == "classic":
             raise RuntimeError("静止校准用于精细 / 自适应模式，请先切换移动模式")
         if not self.stop("calibration_started"):
@@ -116,7 +118,7 @@ class DesktopController:
         if self.source != "camera" or not self.fresh():
             raise RuntimeError("先启动实时相机预览，再进行腕动方向校准")
         if self.engine.config.pointer_basis != "wrist":
-            raise RuntimeError("请先将定位方式切换为手腕转动 · 实验")
+            raise RuntimeError("请先将定位方式切换为腕动角度 · 旧实验")
         if not self.stop("wrist_calibration_started"):
             raise RuntimeError("上一次松键仍在重试，暂不能校准")
         self.wrist_calibration_error = ""
@@ -261,7 +263,9 @@ class DesktopController:
         self.metrics.record("source", source=source)
 
     def configure(self, config):
-        if config.pointer_basis == "wrist":
+        if config.pointer_basis == "unified":
+            config = replace(config, motion_profile="precise", rest_noise_x=0.0, rest_noise_y=0.0)
+        elif config.pointer_basis == "wrist":
             config = replace(config, rest_noise_x=0.0, rest_noise_y=0.0)
         config.validate()
         self.calibration_result = None

@@ -26,11 +26,15 @@ class TripodControls(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         form = QFormLayout()
+        self.motion_form = form
         self.pointer_basis = QComboBox()
-        self.pointer_basis.addItem("现有指尖位置", "position")
-        self.pointer_basis.addItem("手腕转动 · 实验", "wrist")
+        self.pointer_basis.addItem("兼容定位 · 平移＋转腕", "unified")
+        self.pointer_basis.addItem("指尖位置 · 原版对照", "position")
+        self.pointer_basis.addItem("腕动角度 · 旧实验", "wrist")
+        # Other demo windows retain their established position-mode default.
+        self.pointer_basis.setCurrentIndex(self.pointer_basis.findData("position"))
         self.pointer_basis.setToolTip(
-            "腕动模式按转动量移动光标，手腕停下光标就停；需先示范方向校准。"
+            "兼容定位沿用画面方向，平移和自然转腕均可移动，无需方向校准。原位置和角度模式可选作对照。"
         )
         self.wrist_calibration = ()
         self.motion_profile = QComboBox()
@@ -43,6 +47,10 @@ class TripodControls(QWidget):
         self.motion_profile.setToolTip(
             "原版保留已有移动手感；精细模式改善慢速微调；自适应模式随移动速度调整灵敏度。"
         )
+        self.fixed_motion_profile = QLabel("固定精细（灵敏度可调）")
+        self.basis_summary = QLabel("无需方向校准 · 整手平移与自然转腕连续控制")
+        self.basis_summary.setWordWrap(True)
+        self.basis_summary.setObjectName("subtitle")
         self.rest_noise_x = 0.0
         self.rest_noise_y = 0.0
         speed = QWidget()
@@ -106,6 +114,8 @@ class TripodControls(QWidget):
         self.scroll_speed.setCurrentIndex(1)
         form.addRow("定位方式", self.pointer_basis)
         form.addRow("移动模式", self.motion_profile)
+        form.addRow("移动模式", self.fixed_motion_profile)
+        form.addRow(self.basis_summary)
         form.addRow("移动灵敏度", speed)
         form.addRow("抗抖强度", self.stability)
         form.addRow("食拇接触", self.contact)
@@ -139,10 +149,15 @@ class TripodControls(QWidget):
             self.scroll_speed,
         ):
             choice.currentIndexChanged.connect(lambda _: self.changed.emit())
+        self._refresh_basis_hint(self.pointer_basis.currentIndex())
 
     def _refresh_basis_hint(self, _):
-        wrist = self.pointer_basis.currentData() == "wrist"
-        self.motion_profile.setEnabled(not wrist)
+        basis = self.pointer_basis.currentData()
+        wrist = basis == "wrist"
+        self.motion_profile.setEnabled(basis == "position")
+        self.motion_form.setRowVisible(self.motion_profile, basis == "position")
+        self.motion_form.setRowVisible(self.fixed_motion_profile, basis != "position")
+        self.motion_form.setRowVisible(self.basis_summary, basis == "unified")
         if wrist:
             self.motion_profile.setToolTip(
                 "腕动采用固定增益精细滤波；下方灵敏度仍可调。切回位置模式恢复原选择。"
@@ -152,6 +167,15 @@ class TripodControls(QWidget):
                 "停腕即停，松中指可回到舒服姿势再接管。"
                 "腕动采用固定增益精细滤波，灵敏度仍可调。"
                 "食拇点击/保持拖拽、拇无名指右键与 V 手势滚动不变；不会根据偏转持续移动。"
+            )
+        elif basis == "unified":
+            self.motion_profile.setToolTip(
+                "兼容定位采用固定增益精细滤波；灵敏度仍可调。切回位置对照后恢复原移动模式选择。"
+            )
+            self.interaction_hint.setText(
+                "无需方向校准。拇中捏住后，整手平移和自然转腕可连续移动光标，方向沿用画面位置；"
+                "手停光标就停，松中指可换位再接管。采用固定增益精细滤波，灵敏度仍可调。"
+                "食拇点击/保持拖拽、拇无名指右键与 V 手势滚动不变。"
             )
         else:
             self.motion_profile.setToolTip(
@@ -205,13 +229,13 @@ class TripodControls(QWidget):
     def configuration(self):
         touch = self.contact.currentData()
         right_touch = self.right_contact.currentData()
-        wrist = self.pointer_basis.currentData() == "wrist"
+        basis = self.pointer_basis.currentData()
         return TripodConfig(
-            pointer_basis=self.pointer_basis.currentData(),
+            pointer_basis=basis,
             wrist_calibration=self.wrist_calibration,
-            motion_profile=self.motion_profile.currentData(),
-            rest_noise_x=0.0 if wrist else self.rest_noise_x,
-            rest_noise_y=0.0 if wrist else self.rest_noise_y,
+            motion_profile="precise" if basis == "unified" else self.motion_profile.currentData(),
+            rest_noise_x=self.rest_noise_x if basis == "position" else 0.0,
+            rest_noise_y=self.rest_noise_y if basis == "position" else 0.0,
             span=30 / self.sensitivity.value(),
             deadband=self.stability.currentData(),
             touch_ratio=touch,

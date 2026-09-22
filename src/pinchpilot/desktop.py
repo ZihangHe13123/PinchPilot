@@ -213,6 +213,9 @@ class DesktopWindow(QMainWindow):
         self.tripod_controls.motion_profile.setCurrentIndex(
             self.tripod_controls.motion_profile.findData("precise")
         )
+        self.tripod_controls.pointer_basis.setCurrentIndex(
+            self.tripod_controls.pointer_basis.findData("unified")
+        )
         self.tripod_controls.probe_button.hide()
         advanced_layout.addWidget(self.tripod_controls)
         self.calibration_button = QPushButton("6 秒静止校准")
@@ -343,6 +346,10 @@ class DesktopWindow(QMainWindow):
             settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
             if not isinstance(settings, dict):
                 raise ValueError("settings must be an object")
+            if "pointer_basis" not in settings:
+                self.tripod_controls.pointer_basis.setCurrentIndex(
+                    self.tripod_controls.pointer_basis.findData("position")
+                )
             if "motion_profile" not in settings:
                 # Preserve existing users' motion until they opt into a new profile.
                 self.tripod_controls.motion_profile.setCurrentIndex(
@@ -361,6 +368,14 @@ class DesktopWindow(QMainWindow):
                 settings.get("rest_noise_x", 0.0), settings.get("rest_noise_y", 0.0)
             )
             self.tripod_controls.restore_wrist_calibration(settings.get("wrist_calibration", ()))
+            if (
+                settings.get("pointer_basis") == "wrist"
+                and settings.get("unified_mode_seen") is not True
+            ):
+                self.tripod_controls.pointer_basis.setCurrentIndex(
+                    self.tripod_controls.pointer_basis.findData("unified")
+                )
+                self.controller.notice = "已切换兼容定位，无需方向校准，请手动启用鼠标。"
             index = settings.get("camera_index", 0)
             if type(index) is int and 0 <= index <= 8:
                 self.camera_index.setValue(index)
@@ -382,6 +397,7 @@ class DesktopWindow(QMainWindow):
         settings["rest_noise_x"] = self.tripod_controls.rest_noise_x
         settings["rest_noise_y"] = self.tripod_controls.rest_noise_y
         settings["wrist_calibration"] = list(self.tripod_controls.wrist_calibration)
+        settings["unified_mode_seen"] = True
         settings["camera_index"] = self.camera_index.value()
         settings["control_hand"] = self.control_hand.currentData()
         try:
@@ -482,9 +498,9 @@ class DesktopWindow(QMainWindow):
             if self.tripod_controls.restore_noise(result["rest_noise_x"], result["rest_noise_y"]):
                 self._calibration_summary = f"已校准 · 采集时波动 {result['noise_px']:.1f} 逻辑像素 · {result['samples']} 帧"
                 self._save_settings()
-        wrist = self.tripod_controls.pointer_basis.currentData() == "wrist"
+        position = self.tripod_controls.pointer_basis.currentData() == "position"
         for widget in self.rest_calibration_widgets:
-            widget.setVisible(not wrist)
+            widget.setVisible(position)
         calibrating = control.calibrating and control.wrist_capture is None
         classic = self.tripod_controls.motion_profile.currentData() == "classic"
         self.calibration_button.setText("取消静止校准" if calibrating else "6 秒静止校准")
@@ -495,7 +511,7 @@ class DesktopWindow(QMainWindow):
             calibrating
             or (
                 not classic
-                and not wrist
+                and position
                 and not control.calibrating
                 and control.source == "camera"
                 and control.fresh()
