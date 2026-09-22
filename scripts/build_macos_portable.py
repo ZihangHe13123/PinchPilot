@@ -16,7 +16,7 @@ import tomllib
 import zipfile
 from pathlib import Path
 
-from build_windows_portable import digest, download
+from build_windows_portable import audit_source_archive, digest, download
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.tags import compatible_tags, cpython_tags, mac_platforms, parse_tag
@@ -91,7 +91,9 @@ def audit(package, site):
         "runtime/bin/python3.11",
         "runtime/lib/python3.11/LICENSE.txt",
         "runtime/lib/python3.11/site-packages/PySide6/Qt/plugins/platforms/libqcocoa.dylib",
+        "runtime/lib/python3.11/site-packages/pinchpilot/compatible.py",
         "models/hand_landmarker_v1.task",
+        "docs/COMPATIBLE_TRIAL.md",
         "README.txt",
     )
     for name in required:
@@ -144,6 +146,8 @@ def archive(package, destination):
 def main():
     if sys.platform != "darwin" or platform.machine() != "arm64" or sys.version_info[:2] != (3, 11):
         raise RuntimeError("Build with uv's Python 3.11 on an Apple Silicon Mac")
+    if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT):
+        raise RuntimeError("Commit the release sources before building the portable archive")
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     name = f"PinchPilot-{version}-macOS-arm64"
     package = ROOT / "build/macos-arm64" / name
@@ -214,15 +218,15 @@ def main():
     shutil.copy2(fetch_model(), package / "models/hand_landmarker_v1.task")
     for src, target in (
         ("docs/MACOS_ARCHIVE.md", "README.txt"),
-        ("docs/MACOS_ARCHIVE.md", "docs/MACOS_ARCHIVE.md"),
-        ("docs/DESKTOP_TRIAL.md", "docs/DESKTOP_TRIAL.md"),
-        ("docs/WINDOWS_TRIAL.md", "docs/WINDOWS_TRIAL.md"),
-        ("docs/WINDOWS_FEEDBACK.md", "docs/WINDOWS_FEEDBACK.md"),
-        ("docs/VALIDATION.md", "docs/VALIDATION.md"),
         ("THIRD_PARTY.md", "docs/THIRD_PARTY.md"),
         ("requirements.lock", "docs/requirements.lock"),
     ):
         shutil.copy2(ROOT / src, package / target)
+    # Some user guides link to design notes; retain the complete Markdown tree.
+    for path in (ROOT / "docs").rglob("*.md"):
+        target = package / path.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
     run(
         "git",
         "archive",
@@ -233,6 +237,7 @@ def main():
         "HEAD",
     )
     result, links = audit(package, site)
+    result["source_archive"] = audit_source_archive(package, site, version)
     result.update(
         {
             "version": version,

@@ -15,7 +15,7 @@ import sys
 import tomllib
 import urllib.request
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from packaging.requirements import Requirement
 from packaging.tags import compatible_tags, cpython_tags, parse_tag
@@ -111,7 +111,80 @@ def pe_machine(path: Path) -> int:
         return struct.unpack("<H", file.read(2))[0]
 
 
-def audit(package: Path, site: Path) -> dict:
+def audit_source_archive(
+    package: Path, site: Path, version: str, commit: str | None = None
+) -> dict:
+    commit = (
+        commit or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    )
+    source = package / "source" / f"PinchPilot-{version}-source.zip"
+    prefix = "PinchPilot/"
+    package_prefix = prefix + "src/pinchpilot/"
+    with zipfile.ZipFile(source) as bundle:
+        if damaged := bundle.testzip():
+            raise ValueError(f"Source archive CRC failure: {damaged}")
+        if bundle.comment.decode("ascii") != commit:
+            raise ValueError("Source archive does not identify the expected Git commit")
+        names = set(bundle.namelist())
+        if len(names) != len(bundle.infolist()):
+            raise ValueError("Duplicate source archive paths")
+        for name in names:
+            path = PurePosixPath(name)
+            if (
+                "\\" in name
+                or path.is_absolute()
+                or ".." in path.parts
+                or not name.startswith(prefix)
+            ):
+                raise ValueError(f"Invalid source archive path: {name}")
+            relative = path.parts[1:]
+            if (
+                any(part in (".git", ".venv", "__pycache__", ".DS_Store") for part in relative)
+                or (relative and relative[0] in ("data", "reports", "build", "dist"))
+                or path.suffix in (".pyc", ".pyo")
+            ):
+                raise ValueError(f"Unexpected local data in source archive: {name}")
+        for name in (
+            "pyproject.toml",
+            "requirements.lock",
+            "uv.lock",
+            "README.md",
+            "docs/COMPATIBLE_TRIAL.md",
+            "scripts/build_windows_portable.py",
+            "src/pinchpilot/desktop.py",
+        ):
+            if prefix + name not in names:
+                raise ValueError(f"Source archive missing required file: {name}")
+        source_version = tomllib.loads(bundle.read(prefix + "pyproject.toml").decode("utf-8"))[
+            "project"
+        ]["version"]
+        if source_version != version:
+            raise ValueError("Source archive version differs from the portable package")
+        archived_package = {
+            name.removeprefix(package_prefix)
+            for name in names
+            if name.startswith(package_prefix) and not name.endswith("/")
+        }
+        installed_package = {
+            path.relative_to(site / "pinchpilot").as_posix()
+            for path in (site / "pinchpilot").rglob("*")
+            if path.is_file()
+        }
+        if archived_package != installed_package:
+            raise ValueError("Installed PinchPilot file inventory differs from the source snapshot")
+        for name in archived_package:
+            if bundle.read(package_prefix + name) != (site / "pinchpilot" / name).read_bytes():
+                raise ValueError(f"Installed PinchPilot differs from source snapshot: {name}")
+    return {
+        "path": source.relative_to(package).as_posix(),
+        "sha256": digest(source),
+        "entries": len(names),
+        "commit_verified": True,
+        "package_files_matched": len(archived_package),
+    }
+
+
+def audit(package: Path, site: Path, version: str, commit: str) -> dict:
     required = [
         "Start.cmd",
         "Demo.cmd",
@@ -126,6 +199,14 @@ def audit(package: Path, site: Path) -> dict:
         "runtime/Lib/site-packages/pinchpilot/desktop.py",
         "models/hand_landmarker_v1.task",
         "prerequisites/VC_redist.x64.exe",
+        "FEEDBACK.txt",
+        "docs/COMPATIBLE_TRIAL.md",
+        "docs/DESKTOP_TRIAL.md",
+        "docs/WINDOWS_TRIAL.md",
+        "docs/WINDOWS_FEEDBACK.md",
+        "docs/THIRD_PARTY.md",
+        "docs/requirements.lock",
+        f"source/PinchPilot-{version}-source.zip",
     ]
     for name in required:
         if not (package / name).is_file():
@@ -154,11 +235,32 @@ def audit(package: Path, site: Path) -> dict:
         raise ValueError("Bundled model was changed")
     if (package / "data").exists() or (package / "reports").exists():
         raise ValueError("Do not redistribute a used package with tester data/settings")
-    return {"distributions": wheel_inventory(site), "binaries": binaries, "contents_checked": True}
+    missing_docs = [
+        path.relative_to(ROOT / "docs").as_posix()
+        for path in (ROOT / "docs").rglob("*.md")
+        if not (package / path.relative_to(ROOT)).is_file()
+    ]
+    if missing_docs:
+        raise ValueError(f"Missing local documentation: {missing_docs}")
+    return {
+        "distributions": wheel_inventory(site),
+        "binaries": binaries,
+        "contents_checked": True,
+        "documentation_included": sorted(
+            path.relative_to(package / "docs").as_posix()
+            for path in (package / "docs").rglob("*.md")
+        ),
+        "source_archive": audit_source_archive(package, site, version, commit),
+    }
 
 
 def main() -> None:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    source_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT):
+        raise ValueError("Commit or restore source changes before building the archived release")
     name = f"PinchPilot-{version}-Windows-x64"
     package = ROOT / "build/windows-x64" / name
     runtime = package / "runtime"
@@ -218,7 +320,7 @@ def main() -> None:
             )
         elif path.name == "portable.py":
             shutil.copy2(path, package / path.name)
-    for directory in ("models", "docs", "prerequisites"):
+    for directory in ("models", "docs", "prerequisites", "source"):
         (package / directory).mkdir(exist_ok=True)
     shutil.copy2(fetch_model(), package / "models/hand_landmarker_v1.task")
     shutil.copy2(
@@ -229,21 +331,29 @@ def main() -> None:
     for source, destination in (
         ("docs/WINDOWS_TRIAL.md", "README.txt"),
         ("docs/WINDOWS_FEEDBACK.md", "FEEDBACK.txt"),
-        ("docs/DESKTOP_TRIAL.md", "docs/DESKTOP_TRIAL.md"),
-        ("docs/WINDOWS_TRIAL.md", "docs/WINDOWS_TRIAL.md"),
-        ("docs/VALIDATION.md", "docs/VALIDATION.md"),
         ("THIRD_PARTY.md", "docs/THIRD_PARTY.md"),
     ):
         (package / destination).write_text((ROOT / source).read_text(), encoding="utf-8-sig")
+    for document in sorted((ROOT / "docs").rglob("*.md")):
+        destination = package / document.relative_to(ROOT)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(document.read_text(), encoding="utf-8-sig")
     shutil.copy2(ROOT / "requirements.lock", package / "docs/requirements.lock")
-    result = audit(package, site)
+    run(
+        "git",
+        "archive",
+        "--format=zip",
+        "--prefix=PinchPilot/",
+        "-o",
+        str(package / "source" / f"PinchPilot-{version}-source.zip"),
+        source_commit,
+    )
+    result = audit(package, site, version, source_commit)
     result.update(
         {
             "version": version,
             "target": "Windows 10/11 x64; CPython 3.12.10",
-            "source_commit": subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-            ).strip(),
+            "source_commit": source_commit,
             "source_dirty": bool(
                 subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)
             ),

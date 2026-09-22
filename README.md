@@ -6,11 +6,11 @@
 
 ## 立即启动桌面测试版
 
-本轮兼容定位在源码启动版 v0.11.0；下列已交付的 v0.8.1 便携包按原样保留，不包含后续修复与调优。旧版对照报告也保留原记录。退出旧窗口后重新打开源码启动脚本，确认标题版本。
+当前便携归档与源码均为 v0.11.0，包含兼容定位。旧 v0.8.1 便携包与对照报告按原样保留。退出旧窗口后，从新的解压目录启动，确认标题版本；新归档没有复制开发机个人设置或试用日志。
 
-Windows 组员使用 `PinchPilot-0.8.1-Windows-x64.zip`：全部解压后双击 **Start.cmd**，无需安装 Python/uv，模型随包附带。详见 [Windows 试用说明](docs/WINDOWS_TRIAL.md)。
+Windows 组员使用 `PinchPilot-0.11.0-Windows-x64.zip`：全部解压后双击 **Start.cmd**，无需安装 Python/uv，模型随包附带。详见 [Windows 试用说明](docs/WINDOWS_TRIAL.md)。
 
-Mac 留档使用 `PinchPilot-0.8.1-macOS-arm64.zip`：适用于 M 系列 Mac、macOS 14+，解压后双击 **Start.command**。同样带齐运行环境和模型，并含源码快照；详见 [Mac 归档说明](docs/MACOS_ARCHIVE.md)。构建命令：`uv run python scripts/build_macos_portable.py`。
+Mac 留档使用 `PinchPilot-0.11.0-macOS-arm64.zip`：适用于 M 系列 Mac、macOS 14+，解压后双击 **Start.command**。两平台均带齐运行环境、模型、源码快照和SHA-256清单；详见 [Mac 归档说明](docs/MACOS_ARCHIVE.md)。构建命令：`uv run python scripts/build_macos_portable.py`。
 
 源码方式：Mac 双击 **launch_desktop_mac.command**；Windows 双击 **launch_desktop_windows.cmd**。或在项目目录执行：
 
