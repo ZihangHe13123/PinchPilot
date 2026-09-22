@@ -264,10 +264,11 @@ def test_uncalibrated_mode_has_no_events_even_with_valid_hand():
 
 def make_capture(poses=((0, 0, 0), (0, 0, 15), (15, 0, 0)), jitter=0, missing=False, swapped=False):
     capture = WristCalibration(0, TripodConfig(pointer_basis="wrist"))
-    for i in range(360):
-        t = (i + 0.1) / 30
-        stage = min(2, int(t / 4))
-        pose = np.array(poses[stage]) + np.array([0, 0, jitter * (-1) ** i])
+    frames = [(0, poses[0])] * 45 + [(1, poses[1])] * 45
+    frames += [(2, poses[0])] * 15 + [(2, poses[2])] * 45
+    for i, (stage, degrees) in enumerate(frames):
+        t = (i + 1) / 30
+        pose = np.array(degrees) + np.array([0, 0, jitter * (-1) ** i])
         frame = hand(t, pose)
         if missing and i % 2:
             frame = HandFrame(t)
@@ -280,9 +281,97 @@ def make_capture(poses=((0, 0, 0), (0, 0, 15), (15, 0, 0)), jitter=0, missing=Fa
 def test_calibration_uses_only_three_stable_supported_poses():
     capture = make_capture()
     assert capture.result() == pytest.approx(calibration())
-    assert capture.progress(6) == 0.5 and capture.progress(15) == 1
-    assert "回中立" in capture.hint(9)
-    assert "采集" in capture.hint(3.5)
+    assert capture.complete and capture.stage == 3
+    assert capture.progress(0) == capture.progress(500) == 1
+    assert "完成" in capture.hint(15)
+
+
+def test_data_readiness_does_not_advance_just_because_time_passes():
+    capture = WristCalibration(0, TripodConfig(pointer_basis="wrist"))
+    for i in range(20):
+        capture.add(hand(100 + i / 10))
+    progress = capture.progress(102)
+    assert 0 < progress < 1 / 3
+    assert capture.progress(9000) == progress
+    assert capture.stage == 0 and not capture.complete
+    for i in range(20, 30):
+        capture.add(hand(100 + i / 10))
+    assert capture.stage == 1  # 10fps works; there is no fixed 1s capture window.
+
+
+def test_bad_pose_does_not_advance_and_completed_stages_survive_retry():
+    capture = WristCalibration(0, TripodConfig(pointer_basis="wrist"))
+    t = 0
+
+    def feed(degrees, count=30):
+        nonlocal t
+        for _ in range(count):
+            t += 1 / 30
+            capture.add(hand(t, degrees))
+
+    feed((0, 0, 0))
+    assert capture.stage == 1
+    neutral = capture.means[0].copy()
+    feed((0, 0, 3), 180)
+    assert capture.stage == 1 and "8–35" in capture.hint(t)
+    feed((0, 0, 15), 40)
+    assert capture.stage == 2 and capture.need_neutral
+    feed((15, 0, 0), 60)  # Must return neutral before demonstrating up.
+    assert capture.stage == 2 and capture.need_neutral and "先回" in capture.reference_hint()
+    feed((0, 0, 0), 5)
+    feed((2, 0, 15), 120)
+    assert capture.stage == 2 and "太相似" in capture.hint(t)
+    feed((15, 0, 0), 40)
+    assert capture.complete and capture.means[0] == pytest.approx(neutral)
+
+
+def test_natural_finger_contacts_no_longer_discard_valid_palm_orientation():
+    capture = WristCalibration(0, TripodConfig(pointer_basis="wrist", right_enabled=False))
+    poses = [(0, 0, 0)] * 35 + [(0, 0, 15)] * 35 + [(0, 0, 0)] * 10 + [(15, 0, 0)] * 35
+    for i, degrees in enumerate(poses):
+        capture.add(hand((i + 1) / 30, degrees, grip=False, contact=0.1, right_contact=0.1))
+    assert capture.complete
+    assert capture.result() == pytest.approx(calibration())
+
+
+def test_unstable_window_is_replaced_after_user_settles_without_restart():
+    capture = WristCalibration(0, TripodConfig(pointer_basis="wrist"))
+    for i in range(120):
+        capture.add(hand((i + 1) / 30, (0, 0, 5 * (-1) ** i)))
+    assert capture.stage == 0 and "波动" in capture.hint(4)
+    for i in range(120, 160):
+        capture.add(hand((i + 1) / 30))
+    assert capture.stage == 1
+
+
+def test_missing_or_edge_on_hand_has_specific_feedback_and_summary_without_coordinates():
+    import json
+
+    capture = WristCalibration(0, TripodConfig(pointer_basis="wrist"))
+    capture.add(HandFrame(1))
+    assert "尚未取得控制手" in capture.hint(1)
+    capture.add(hand(2, (89, 0, 0)))
+    assert "太侧斜" in capture.hint(2)
+    report = capture.diagnostics()
+    assert report["stages"][0]["rejected"] == {"missing_hand": 1, "edge_on": 1}
+    assert report["stages"][0]["accepted"] == 0
+    text = json.dumps(report, allow_nan=False)
+    assert "landmarks" not in text and "coordinates" not in text
+
+
+def test_single_bad_time_or_other_hand_can_recover_without_discarding_completed_step():
+    capture = WristCalibration(0, TripodConfig(pointer_basis="wrist"))
+    for i in range(30):
+        capture.add(hand((i + 1) / 30))
+    assert capture.stage == 1
+    capture.add(hand(0.9, (0, 0, 15)))
+    assert "帧顺序" in capture.hint(1)
+    capture.add(replace(hand(1.1, (0, 0, 15)), handedness="Left"))
+    assert "控制手改变" in capture.hint(1.1)
+    for i in range(40):
+        capture.add(hand(1.2 + i / 30, (0, 0, 15)))
+    assert capture.stage == 2
+    assert capture.diagnostics()["hand_changed"] and capture.diagnostics()["time_order_invalid"]
 
 
 @pytest.mark.parametrize(

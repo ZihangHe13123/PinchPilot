@@ -254,7 +254,7 @@ class TripodEngine:
         f = self.features
         if self.config.pointer_basis == "wrist":
             hints["WAIT_GRIP"] = (
-                "先完成12秒腕动方向校准"
+                "先完成三步腕动方向校准"
                 if self.wrist_mapping is None
                 else "前臂放稳 · 拇中捏住接管腕动，食指移开"
             )
@@ -473,7 +473,7 @@ class TripodEngine:
             return self.reset()
         if wrist:
             if self.wrist_mapping is None:
-                return self._disarm(f, frame, "先完成12秒腕动方向校准，再启用鼠标")
+                return self._disarm(f, frame, "先完成三步腕动方向校准，再启用鼠标")
             pose = palm_rotation(frame)
             if pose is None:
                 return self._disarm(

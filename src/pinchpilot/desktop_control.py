@@ -34,6 +34,7 @@ class DesktopController:
         self.calibration_result = None
         self.wrist_capture = None
         self.wrist_calibration_result = None
+        self.wrist_calibration_error = ""
         self.framing = FramingMonitor()
 
     @property
@@ -62,7 +63,7 @@ class DesktopController:
         if self.source != "camera" or not self.fresh():
             raise RuntimeError("先启动实时相机预览，再进行静止校准")
         if self.engine.config.pointer_basis != "position":
-            raise RuntimeError("静止噪声校准仅用于指尖位置模式；腕动请使用 12 秒方向校准")
+            raise RuntimeError("静止噪声校准仅用于指尖位置模式；腕动请使用三步方向校准")
         if self.engine.config.motion_profile == "classic":
             raise RuntimeError("静止校准用于精细 / 自适应模式，请先切换移动模式")
         if not self.stop("calibration_started"):
@@ -73,12 +74,43 @@ class DesktopController:
             "准备 1 秒、静止采集 5 秒：支撑前臂，拇中捏住，食指和无名指移开。鼠标控制已关闭。"
         )
 
-    def cancel_calibration(self):
+    def cancel_calibration(self, reason="user_cancelled"):
         if self.calibrating:
-            label = "腕动方向" if self.wrist_capture is not None else "静止"
+            wrist = self.wrist_capture is not None
+            measurement = self.wrist_capture
+            label = "腕动方向" if wrist else "静止"
             self.calibration = None
             self.wrist_capture = None
             self.notice = f"{label}校准已取消，保留原设置；鼠标控制保持关闭。"
+            if wrist:
+                cause = {
+                    "stale_camera": "相机画面中断",
+                    "invalid_or_stale_frame": "相机帧无效或过期",
+                    "source_changed": "画面来源已切换",
+                    "settings_changed": "控制设置已改变",
+                    "window_closed": "窗口已关闭",
+                }.get(reason, "已取消此次校准")
+                self.wrist_calibration_error = (
+                    f"腕动方向校准未完成：{cause}。"
+                    f"最后采集情况：{measurement.hint(self.clock())}。"
+                    "保留原设置；鼠标控制保持关闭。"
+                )
+                self.notice = self.wrist_calibration_error
+                self.metrics.record(
+                    "wrist_calibration_cancelled",
+                    reason=reason,
+                    diagnostics=self._wrist_diagnostics(measurement),
+                )
+
+    @staticmethod
+    def _wrist_diagnostics(measurement):
+        """Read only the public geometry summary, never capture frames or coordinates."""
+        diagnostics = getattr(measurement, "diagnostics", None)
+        try:
+            summary = diagnostics() if callable(diagnostics) else {}
+        except Exception:
+            return {"unavailable": True}
+        return summary if isinstance(summary, dict) else {}
 
     def start_wrist_calibration(self):
         if self.source != "camera" or not self.fresh():
@@ -87,8 +119,10 @@ class DesktopController:
             raise RuntimeError("请先将定位方式切换为手腕转动 · 实验")
         if not self.stop("wrist_calibration_started"):
             raise RuntimeError("上一次松键仍在重试，暂不能校准")
+        self.wrist_calibration_error = ""
         self.wrist_calibration_result = None
         self.wrist_capture = WristCalibration(self.clock(), self.engine.config)
+        self.metrics.record("wrist_calibration_started")
         self.notice = "腕动方向校准已开始，鼠标控制保持关闭。" + self.wrist_capture.hint(
             self.clock()
         )
@@ -102,9 +136,23 @@ class DesktopController:
             config = replace(self.engine.config, wrist_calibration=values)
             config.validate()
         except (ValueError, TypeError) as error:
-            self.notice = f"腕动方向校准未应用：{error}；保留原设置。"
+            retained = (
+                "保留此前校准；本次结果未应用。"
+                if self.engine.config.wrist_calibration
+                else "本次未生成校准，请按上述原因调整后重试。"
+            )
+            self.wrist_calibration_error = (
+                f"此次腕动方向校准未通过：{error}。{retained}鼠标控制保持关闭。"
+            )
+            self.notice = self.wrist_calibration_error
+            self.metrics.record(
+                "wrist_calibration_failed",
+                reason=str(error),
+                diagnostics=self._wrist_diagnostics(measurement),
+            )
             return
         self.configure(config)
+        self.wrist_calibration_error = ""
         self.wrist_calibration_result = values
         self.metrics.record(
             "wrist_calibration",
@@ -152,7 +200,7 @@ class DesktopController:
         if self.source != "camera" or not self.fresh():
             raise RuntimeError("需要实时相机画面；演示、停流或过期画面不能控制鼠标")
         if self.engine.config.pointer_basis == "wrist" and not self.engine.config.wrist_calibration:
-            raise RuntimeError("腕动模式尚未校准；请先完成 12 秒腕动方向校准")
+            raise RuntimeError("腕动模式尚未校准；请先完成三步腕动方向校准")
         self.session = None
         output = self.output_factory()
         self.session = MouseSession(output, self.clock, self.background)
@@ -190,7 +238,7 @@ class DesktopController:
             self.notice = current["error"]
 
     def stop(self, reason="user_stop"):
-        self.cancel_calibration()
+        self.cancel_calibration(reason)
         released = True
         if self.session:
             released = self.session.stop(reason)
@@ -267,9 +315,9 @@ class DesktopController:
         now = self.clock()
         if self.wrist_capture is not None:
             if not self.fresh(now) or self.source != "camera":
-                self.cancel_calibration()
+                self.cancel_calibration("stale_camera")
                 self.notice = "相机画面中断，腕动方向校准未应用；保留原设置。"
-            elif self.wrist_calibration_progress >= 1.0:
+            elif self.wrist_capture.complete:
                 self._finish_wrist_calibration()
         if self.calibration is not None:
             if not self.fresh(now) or self.source != "camera":

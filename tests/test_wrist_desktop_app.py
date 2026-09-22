@@ -192,17 +192,22 @@ def test_wrist_calibration_ui_progress_saves_once_and_requires_manual_enable(win
     capture = window.controller.wrist_capture
     assert capture is not None and "取消" in window.wrist_calibration_button.text()
     assert not window.live_button.isEnabled() and not window.controller.active
-    window.rig.clock.now = capture.started + 6
-    window.rig.frames()
+    capture.stage = 1
+    capture.reference_hint = lambda: "相对中立向右转腕 · 当前 15°"
+    window.rig.frames(50)
     window._refresh()
     assert window.wrist_calibration_progress.value() == 50
     assert "50%" in window.wrist_calibration_status.text()
+    assert "【② 向右】" in window.wrist_calibration_steps.text()
+    assert "15°" in window.wrist_calibration_reference.text()
+    assert "方向校准 · 系统输入已关闭" in window.gesture.text()
+    assert "12 秒" not in window.wrist_calibration_button.text()
     assert window.framing_status_label.isHidden()
     assert not window.camera_view.frame_edges
     assert not window.framing_overlay.isVisible()
     save = Mock(wraps=window._save_settings)
     monkeypatch.setattr(window, "_save_settings", save)
-    window.rig.clock.now = capture.started + 12
+    capture.complete = True
     window.rig.frames()
     window._refresh()
     window._refresh()
@@ -261,14 +266,24 @@ def test_real_wrist_capture_through_controller_persists_three_demonstrated_poses
     window.rig.frames()
     window._refresh()
     window.wrist_calibration_button.click()
-    started = window.controller.wrist_capture.started
-    for index in range(366):
-        elapsed = (index + 0.1) / 30
-        window.rig.clock.now = started + elapsed
-        pose = ((0, 0, 0), (0, 0, 15), (15, 0, 0))[min(2, int(elapsed / 4))]
+
+    def feed(pose):
+        window.rig.clock.now += 1 / 30
         frame = hand(window.rig.clock.now, pose)
         window.controller.consume(Packet(None, frame, 0.0, 30.0, frame.timestamp))
         window.controller.tick()
+
+    for stage, pose in enumerate(((0, 0, 0), (0, 0, 15), (15, 0, 0))):
+        if stage == 2:
+            for _ in range(40):
+                feed((0, 0, 0))
+        for _ in range(200):
+            capture = window.controller.wrist_capture
+            if capture is None or capture.stage > stage:
+                break
+            feed(pose)
+        else:
+            pytest.fail(window.controller.wrist_capture.hint(window.rig.clock.now))
     window._refresh()
     assert window.controller.engine.config.wrist_calibration == pytest.approx(calibration())
     saved = json.loads(window.settings_path.read_text())
@@ -291,9 +306,113 @@ def test_short_window_scroll_reveals_wrist_calibration_controls(window, applicat
     viewport = window.settings_area.viewport()
     assert window.settings_area.verticalScrollBar().maximum() > 0
     for widget in (
-        window.wrist_calibration_button,
+        window.wrist_pose_guide,
         window.wrist_calibration_progress,
         window.wrist_calibration_status,
     ):
         top = widget.mapTo(viewport, QPoint(0, 0)).y()
         assert top >= 0 and top + widget.height() <= viewport.height()
+    window.settings_area.ensureWidgetVisible(window.wrist_calibration_button)
+    application.processEvents()
+    top = window.wrist_calibration_button.mapTo(viewport, QPoint(0, 0)).y()
+    assert top >= 0 and top + window.wrist_calibration_button.height() <= viewport.height()
+
+
+@pytest.mark.parametrize("previous_calibration", [False, True])
+def test_wrist_failure_is_persistent_visible_and_keeps_old_calibration(
+    window, application, monkeypatch, previous_calibration
+):
+    monkeypatch.setattr("pinchpilot.desktop_control.WristCalibration", FakeWristCalibration)
+    if previous_calibration:
+        window.tripod_controls.restore_wrist_calibration(CALIBRATION)
+    select_basis(window, "wrist")
+    window.controller.set_source("camera")
+    window.rig.frames()
+    window.show()
+    window._refresh()
+    window.wrist_calibration_button.click()
+    window.advanced_button.setChecked(False)
+    capture = window.controller.wrist_capture
+    cause = "向右转动仅 2.1°，低于 8°；请稍多转动手腕并停稳"
+    capture.failure = cause
+    capture.complete = True
+    window.rig.frames()
+    window._refresh()
+    application.processEvents()
+    assert window.advanced_button.isChecked()
+    assert cause in window.wrist_calibration_status.text()
+    assert window.wrist_calibration_status.styleSheet()
+    assert window.wrist_calibration_progress.value() == 0
+    assert not window.controller.active and not window.live_button.isChecked()
+    if previous_calibration:
+        assert window.controller.engine.config.wrist_calibration == CALIBRATION
+        assert "保留此前校准" in window.wrist_calibration_status.text()
+    viewport = window.settings_area.viewport()
+    top = window.wrist_calibration_status.mapTo(viewport, QPoint(0, 0)).y()
+    assert top >= 0 and top + window.wrist_calibration_status.height() <= viewport.height()
+    window.settings_area.verticalScrollBar().setValue(0)
+    window.controller.notice = "普通状态更新"
+    window._refresh()
+    window._refresh()
+    application.processEvents()
+    assert cause in window.wrist_calibration_status.text()
+    assert window.settings_area.verticalScrollBar().value() == 0
+    window.clear_wrist_calibration_button.click()
+    assert window.controller.wrist_calibration_error == ""
+    assert not window.wrist_calibration_status.styleSheet()
+    assert "尚未校准" in window.wrist_calibration_status.text()
+    assert not window.rig.created
+
+
+def test_retry_replaces_failure_with_live_quality_hint(window, monkeypatch):
+    monkeypatch.setattr("pinchpilot.desktop_control.WristCalibration", FakeWristCalibration)
+    select_basis(window, "wrist")
+    window.controller.set_source("camera")
+    window.rig.frames()
+    window._refresh()
+    window.wrist_calibration_button.click()
+    window.controller.wrist_capture.failure = "姿态不稳定"
+    window.controller.wrist_capture.complete = True
+    window.rig.frames()
+    window._refresh()
+    assert "姿态不稳定" in window.wrist_calibration_status.text()
+    window.wrist_calibration_button.click()
+    assert window.controller.wrist_calibration_error == ""
+    assert not window.wrist_calibration_status.styleSheet()
+    assert "腕动校准" in window.wrist_calibration_status.text()
+    assert "姿态不稳定" not in window.wrist_calibration_status.text()
+    assert not window.controller.active
+
+
+def test_pose_demo_follows_quality_flags_and_stops_during_collection(
+    window, application, monkeypatch
+):
+    monkeypatch.setattr("pinchpilot.desktop_control.WristCalibration", FakeWristCalibration)
+    select_basis(window, "wrist")
+    window.controller.set_source("camera")
+    window.rig.frames()
+    window.show()
+    window.advanced_button.setChecked(True)
+    window._refresh()
+    window.wrist_calibration_button.click()
+    capture = window.controller.wrist_capture
+    capture.stage = 1
+    capture.collecting = False
+    capture.need_neutral = False
+    window._refresh()
+    application.processEvents()
+    assert window.wrist_pose_guide.stage == 1
+    assert window.wrist_pose_guide.timer.isActive()
+    capture.collecting = True
+    window._refresh()
+    assert not window.wrist_pose_guide.timer.isActive()
+    capture.stage = 2
+    capture.collecting = False
+    capture.need_neutral = True
+    window._refresh()
+    assert window.wrist_pose_guide.stage == 2
+    assert not window.wrist_pose_guide.timer.isActive()
+    capture.need_neutral = False
+    window._refresh()
+    assert window.wrist_pose_guide.timer.isActive()
+    assert window.controller.calibrating and not window.controller.active and not window.rig.created

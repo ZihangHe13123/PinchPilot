@@ -6,7 +6,7 @@ import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, Qt, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QLockFile, QPoint, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,6 +33,7 @@ from .tripod_controls import TripodControls
 from .tripod_demo import tripod_demo_frame
 from .vision import CameraWorker, Packet, default_model_path, fetch_model
 from .widgets import CameraView
+from .wrist_guide import WristPoseGuide
 
 
 class DesktopWindow(QMainWindow):
@@ -56,6 +57,8 @@ class DesktopWindow(QMainWindow):
         self._calibration_summary = ""
         self._wrist_calibration_seen = None
         self._wrist_calibration_summary = ""
+        self._wrist_error_seen = ""
+        self._wrist_stage_seen = None
         self.framing_overlay = FramingOverlay()
         self.setWindowTitle(f"PinchPilot {__version__} · 桌面测试版")
         self.resize(980, 700)
@@ -248,13 +251,24 @@ class DesktopWindow(QMainWindow):
         self.wrist_calibration_group = QWidget()
         wrist_layout = QVBoxLayout(self.wrist_calibration_group)
         wrist_layout.setContentsMargins(0, 0, 0, 0)
-        self.wrist_calibration_button = QPushButton("12 秒腕动方向校准")
+        self.wrist_calibration_button = QPushButton("三步腕动方向校准")
         self.wrist_calibration_button.clicked.connect(self._toggle_wrist_calibration)
         wrist_layout.addWidget(self.wrist_calibration_button)
         self.wrist_calibration_progress = QProgressBar()
         self.wrist_calibration_progress.setRange(0, 100)
         self.wrist_calibration_progress.setValue(0)
         self.wrist_calibration_progress.setStyleSheet(self.calibration_progress.styleSheet())
+        self.wrist_calibration_steps = QLabel("① 中立  →  ② 向右  →  ③ 向上")
+        self.wrist_calibration_steps.setWordWrap(True)
+        wrist_layout.addWidget(self.wrist_calibration_steps)
+        self.wrist_calibration_reference = QLabel()
+        self.wrist_calibration_reference.setWordWrap(True)
+        self.wrist_calibration_reference.setTextFormat(Qt.TextFormat.PlainText)
+        self.wrist_calibration_reference.setStyleSheet("color: #9fe4dd;")
+        wrist_layout.addWidget(self.wrist_calibration_reference)
+        self.wrist_pose_guide = WristPoseGuide(self.wrist_calibration_group)
+        self.wrist_pose_guide.setFixedHeight(140)
+        wrist_layout.addWidget(self.wrist_pose_guide)
         wrist_layout.addWidget(self.wrist_calibration_progress)
         self.wrist_calibration_status = QLabel()
         self.wrist_calibration_status.setObjectName("subtitle")
@@ -265,9 +279,11 @@ class DesktopWindow(QMainWindow):
         self.clear_wrist_calibration_button.clicked.connect(self._clear_wrist_calibration)
         wrist_layout.addWidget(self.clear_wrist_calibration_button)
         wrist_hint = QLabel(
-            "支撑前臂并保持拇中捏合，食指和无名指移开。"
-            "按提示示范舒服的中立姿态、向右与向上转动后的姿态；每步准备 3 秒、记录 1 秒。"
+            "支撑前臂，让掌部清晰可见。"
+            "按提示示范舒服的中立姿态、向右与向上转动后的姿态；每步数据足够且稳定才会继续。"
+            "不按倒计时切换，可随时取消。"
             "只保存方向参数，不保存关键点；校准结束不会自动启用鼠标。"
+            "侧视图仅演示动作，实际让镜头看清掌部。"
         )
         wrist_hint.setObjectName("subtitle")
         wrist_hint.setWordWrap(True)
@@ -511,13 +527,23 @@ class DesktopWindow(QMainWindow):
             else:
                 self.controller.start_wrist_calibration()
         except Exception as error:
-            self.controller.notice = f"腕动校准未启动：{error}"
+            self.controller.wrist_calibration_error = f"腕动校准未启动：{error}"
+            self.controller.notice = self.controller.wrist_calibration_error
         self._refresh()
         if self.controller.wrist_capture is not None:
             QTimer.singleShot(0, self._reveal_wrist_calibration)
 
     def _reveal_wrist_calibration(self):
         if self.advanced.isVisible():
+            if not self.controller.wrist_calibration_error:
+                content = self.settings_area.widget()
+                top = self.wrist_pose_guide.mapTo(content, QPoint(0, 0)).y()
+                bottom = self.wrist_calibration_status.mapTo(content, QPoint(0, 0)).y()
+                bottom += self.wrist_calibration_status.height()
+                height = self.settings_area.viewport().height()
+                if bottom - top + 12 <= height:
+                    self.settings_area.verticalScrollBar().setValue(max(0, bottom - height + 6))
+                    return
             self.settings_area.ensureWidgetVisible(self.wrist_calibration_status, 0, 35)
 
     def _clear_wrist_calibration(self):
@@ -525,7 +551,8 @@ class DesktopWindow(QMainWindow):
         self._wrist_calibration_summary = ""
         self.tripod_controls.restore_wrist_calibration(())
         self._configure()
-        self.controller.notice = "已清除腕动方向校准；重新完成 12 秒校准后才能启用腕动控制。"
+        self.controller.wrist_calibration_error = ""
+        self.controller.notice = "已清除腕动方向校准；重新完成三步校准后才能启用腕动控制。"
         self._refresh()
 
     def _refresh_wrist_calibration(self):
@@ -540,8 +567,9 @@ class DesktopWindow(QMainWindow):
         self.wrist_calibration_group.setVisible(wrist)
         capturing = control.wrist_capture is not None
         calibrated = bool(self.tripod_controls.wrist_calibration)
+        error = control.wrist_calibration_error
         self.wrist_calibration_button.setText(
-            "取消腕动方向校准" if capturing else "12 秒腕动方向校准"
+            "取消腕动方向校准" if capturing else "三步腕动方向校准"
         )
         self.wrist_calibration_button.setEnabled(
             capturing
@@ -553,18 +581,62 @@ class DesktopWindow(QMainWindow):
                 and not control.pending_release
             )
         )
-        progress = control.wrist_calibration_progress if capturing else float(calibrated)
+        progress = (
+            control.wrist_calibration_progress if capturing else float(calibrated and not error)
+        )
         self.wrist_calibration_progress.setValue(round(progress * 100))
-        self.clear_wrist_calibration_button.setEnabled(calibrated or capturing)
+        self.clear_wrist_calibration_button.setEnabled(calibrated or capturing or bool(error))
+        labels = ("① 中立", "② 向右", "③ 向上")
+        stage = getattr(control.wrist_capture, "stage", 0) if capturing else 3 if calibrated else 0
+        self.wrist_pose_guide.set_stage(stage)
+        self.wrist_pose_guide.set_neutral_return(
+            bool(capturing and getattr(control.wrist_capture, "need_neutral", False))
+        )
+        self.wrist_pose_guide.set_collecting(
+            bool(capturing and getattr(control.wrist_capture, "collecting", False))
+        )
+        self.wrist_pose_guide.setVisible(not error)
+        if not capturing:
+            self._wrist_stage_seen = None
+        elif stage != self._wrist_stage_seen:
+            self._wrist_stage_seen = stage
+            QTimer.singleShot(0, self._reveal_wrist_calibration)
+        if capturing:
+            self.wrist_calibration_steps.setText(
+                "  →  ".join(
+                    f"✓ {label}" if index < stage else f"【{label}】" if index == stage else label
+                    for index, label in enumerate(labels)
+                )
+            )
+            reference = getattr(control.wrist_capture, "reference_hint", None)
+            self.wrist_calibration_reference.setText(reference() if callable(reference) else "")
+        else:
+            self.wrist_calibration_steps.setText("  →  ".join(labels))
+            self.wrist_calibration_reference.setText(
+                "先自然放稳；再相对中立向右转腕；最后回中立后向上转腕。"
+            )
         if capturing:
             text = control.wrist_capture.hint(control.clock())
+        elif error:
+            text = error
         elif self._wrist_calibration_summary and calibrated:
             text = self._wrist_calibration_summary
         elif calibrated:
             text = "已恢复腕动方向校准 · 停腕即停；姿势改变后可重新示范方向。"
         else:
-            text = "腕动尚未校准，暂不能启用鼠标。先启动相机，再完成 12 秒方向校准。"
+            text = "腕动尚未校准，暂不能启用鼠标。先启动相机，再按三步提示采集。"
         self.wrist_calibration_status.setText(text)
+        self.wrist_calibration_status.setStyleSheet(
+            "color: #ffbc8c; background: #3d2825; padding: 8px; border-radius: 5px;"
+            if error and not capturing
+            else ""
+        )
+        if not error:
+            self._wrist_error_seen = ""
+        elif wrist and error != self._wrist_error_seen:
+            self._wrist_error_seen = error
+            self.advanced_button.setChecked(True)
+            QTimer.singleShot(0, self._reveal_wrist_calibration)
 
     def _camera_changed(self):
         self.stop_camera()
@@ -760,7 +832,7 @@ class DesktopWindow(QMainWindow):
             )
         )
         self.live_button.setToolTip(
-            "请先完成 12 秒腕动方向校准"
+            "请先完成三步腕动方向校准"
             if control.engine.config.pointer_basis == "wrist"
             and not control.engine.config.wrist_calibration
             else ""
@@ -777,7 +849,14 @@ class DesktopWindow(QMainWindow):
         held = "左键按住" if snapshot.get("left_held") else "按键已松开"
         if snapshot.get("right_held"):
             held = "右键按住"
-        self.gesture.setText(f"{control.result.state} · {held}\n{control.result.hint}")
+        if control.wrist_capture is not None:
+            reference = getattr(control.wrist_capture, "reference_hint", None)
+            guide = reference() + "\n" if callable(reference) else ""
+            self.gesture.setText(
+                "方向校准 · 系统输入已关闭\n" + guide + control.wrist_capture.hint(control.clock())
+            )
+        else:
+            self.gesture.setText(f"{control.result.state} · {held}\n{control.result.hint}")
         data = control.metrics.snapshot(control.clock())
         synthetic = control.source == "synthetic_demo"
         inference = data["inference_ms"]
@@ -808,6 +887,7 @@ class DesktopWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def closeEvent(self, event):
+        self.wrist_pose_guide.stop()
         self.framing_overlay.set_hint("", False)
         self.stop_camera()
         if not self.controller.close():

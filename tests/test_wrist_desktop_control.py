@@ -34,8 +34,6 @@ CALIBRATION = (
 class FakeWristCalibration:
     """Keep lifecycle tests independent of the real pose-fitting algorithm."""
 
-    DURATION = 12.0
-
     def __init__(self, started, config):
         self.started = started
         self.config = config
@@ -43,15 +41,20 @@ class FakeWristCalibration:
         self.failure = None
         self.parameters = CALIBRATION
         self.result_calls = 0
+        self.complete = False
+        self.stage = 0
 
     def add(self, frame):
         self.frames.append(frame)
 
     def progress(self, now):
-        return min(1.0, max(0.0, (now - self.started) / self.DURATION))
+        return 1.0 if self.complete else min(0.99, len(self.frames) / 100)
 
     def hint(self, now):
         return f"腕动校准 {self.progress(now):.0%}"
+
+    def reference_hint(self):
+        return "先保持中立姿态，再按指引分别转向右方与上方。"
 
     def result(self):
         self.result_calls += 1
@@ -80,7 +83,7 @@ def preview(rig, calibrated=False):
 
 def finish(rig):
     capture = rig.control.wrist_capture
-    rig.clock.now = capture.started + capture.DURATION
+    capture.complete = True
     rig.frames()
     return capture
 
@@ -130,7 +133,6 @@ def test_capture_receives_live_frames_and_applies_only_the_result(rig):
     assert rig.control.wrist_calibration_result is None
     assert not rig.control.active
 
-    rig.clock.now += capture.DURATION / 2
     rig.frames()
     assert len(capture.frames) == 1
     assert capture.frames[0].timestamp == rig.clock.now
@@ -147,6 +149,21 @@ def test_capture_receives_live_frames_and_applies_only_the_result(rig):
     assert not rig.control.active and not rig.created and not rig.output.events
     rig.frames(4)
     assert capture.result_calls == 1
+
+
+def test_elapsed_time_alone_does_not_finish_or_fail_calibration(rig):
+    preview(rig)
+    rig.control.start_wrist_calibration()
+    capture = rig.control.wrist_capture
+    capture.progress = lambda now: 1.0
+    rig.frames(1000)
+    assert rig.clock.now - capture.started > 30
+    assert not capture.complete and capture.result_calls == 0
+    assert rig.control.wrist_capture is capture and rig.control.calibrating
+    assert rig.control.wrist_calibration_result is None
+    assert rig.control.wrist_calibration_error == ""
+    assert rig.control.engine.config.wrist_calibration == ()
+    assert not rig.control.active and not rig.created and not rig.output.events
 
 
 def test_recalibration_releases_held_button_and_never_resumes_output(rig):
@@ -224,7 +241,57 @@ def test_failed_fit_keeps_previous_calibration_and_mouse_disabled(rig):
     assert rig.control.wrist_calibration_result is None
     assert rig.control.engine.config == previous
     assert capture.failure in rig.control.notice
+    assert capture.failure in rig.control.wrist_calibration_error
     assert not rig.created and not rig.output.events
+
+
+def test_failure_reason_survives_preview_ticks_and_ordinary_configuration(rig):
+    preview(rig, calibrated=True)
+    rig.control.start_wrist_calibration()
+    reason = "水平有效样本 4/12，角度仅 2.1°；请转腕后保持姿势。"
+    rig.control.wrist_capture.failure = reason
+    finish(rig)
+    error = rig.control.wrist_calibration_error
+    assert reason in error
+    rig.frames(30)
+    assert rig.control.wrist_calibration_error == error
+    rig.control.configure(replace(rig.control.engine.config, span=0.4))
+    rig.control.tick()
+    assert rig.control.wrist_calibration_error == error
+    assert rig.control.engine.config.wrist_calibration == CALIBRATION
+    assert not rig.control.active and not rig.output.events
+
+
+def test_retry_clears_failure_when_starting_and_success_leaves_it_clear(rig):
+    preview(rig, calibrated=True)
+    rig.control.start_wrist_calibration()
+    rig.control.wrist_capture.failure = "上一次方向不稳定"
+    finish(rig)
+    assert rig.control.wrist_calibration_error
+    rig.control.start_wrist_calibration()
+    assert rig.control.wrist_calibration_error == ""
+    assert rig.control.calibrating
+    rig.frames(4)
+    assert rig.control.wrist_calibration_error == ""
+    finish(rig)
+    assert rig.control.wrist_calibration_error == ""
+    assert rig.control.wrist_calibration_result == CALIBRATION
+    assert not rig.control.active and not rig.output.events
+
+
+def test_cancelled_capture_leaves_a_persistent_explanation(rig):
+    preview(rig, calibrated=True)
+    rig.control.start_wrist_calibration()
+    rig.frames(4)
+    rig.control.cancel_calibration()
+    error = rig.control.wrist_calibration_error
+    assert "取消" in error
+    rig.frames(4)
+    rig.control.configure(replace(rig.control.engine.config, span=0.4))
+    assert rig.control.wrist_calibration_error == error
+    assert rig.control.wrist_calibration_result is None
+    assert rig.control.engine.config.wrist_calibration == CALIBRATION
+    assert not rig.control.active and not rig.output.events
 
 
 @pytest.mark.parametrize("parameters", [(), CALIBRATION[:-1], (float("nan"),) * 15])
@@ -298,3 +365,101 @@ def test_logging_saves_fitted_parameters_without_capture_frames(rig):
     for forbidden in ("landmarks", "world_landmarks", "trajectory", '"rgb"', '"frames"'):
         assert forbidden not in text
     assert rows[0]["stores_images"] is False
+
+
+@pytest.mark.parametrize("has_diagnostics", [False, True])
+def test_failed_calibration_logs_reason_and_summary_without_capture_data(rig, has_diagnostics):
+    preview(rig, calibrated=True)
+    metrics = rig.control.metrics
+    metrics.set_logging(True, asdict(rig.control.engine.config), "camera")
+    path = metrics.path
+    rig.control.start_wrist_calibration()
+    capture = rig.control.wrist_capture
+    capture.failure = "垂直方向采样不足：有效 3，至少需要 12"
+    diagnostics = {
+        "scope": "counts and angular spread only",
+        "hand_changed": False,
+        "time_order_invalid": False,
+        "stages": {
+            "vertical": {
+                "observed": 15,
+                "accepted": 3,
+                "rejected": {"missing_hand": 8, "invalid_palm": 4},
+                "span_s": 0.73,
+                "max_gap_s": 0.2,
+                "spread_deg": 1.7,
+            }
+        },
+    }
+    if has_diagnostics:
+        capture.diagnostics = lambda: diagnostics
+    else:
+        assert not hasattr(capture, "diagnostics")
+    rig.frames(6)
+    finish(rig)
+    assert capture.frames
+    metrics.close()
+    text = path.read_text()
+    rows = [json.loads(line) for line in text.splitlines()]
+    failures = [row for row in rows if row["type"] == "wrist_calibration_failed"]
+    assert len(failures) == 1
+    assert capture.failure in failures[0]["reason"]
+    assert failures[0]["diagnostics"] == (diagnostics if has_diagnostics else {})
+    assert not any(row["type"] == "wrist_calibration" for row in rows)
+    for forbidden in ("landmarks", "world_landmarks", "trajectory", '"rgb"', '"frames"'):
+        assert forbidden not in text
+    assert rig.control.engine.config.wrist_calibration == CALIBRATION
+    assert not rig.control.active and not rig.output.events
+
+
+def test_logging_disabled_creates_no_file_for_failed_calibration(rig):
+    preview(rig)
+    metrics = rig.control.metrics
+    assert metrics.file is None and metrics.path is None
+    rig.control.start_wrist_calibration()
+    rig.control.wrist_capture.failure = "中立姿态不稳定"
+    rig.control.wrist_capture.diagnostics = lambda: {"accepted_samples": 2}
+    finish(rig)
+    assert "中立姿态不稳定" in rig.control.wrist_calibration_error
+    assert metrics.file is None and metrics.path is None
+    assert not list(metrics.directory.glob("*.jsonl"))
+    assert not rig.control.active and not rig.output.events
+
+
+def test_cancelling_quality_wait_keeps_last_issue_and_logs_only_summary(rig):
+    preview(rig)
+    metrics = rig.control.metrics
+    metrics.set_logging(True, asdict(rig.control.engine.config), "camera")
+    path = metrics.path
+    rig.control.start_wrist_calibration()
+    capture = rig.control.wrist_capture
+    issue = "第 2/3 步 · 估计偏转 2.1°；轻转至 8–35° 后停住"
+    summary = {"stage": 1, "estimated_turn_deg": 2.1, "current_issue": issue, "complete": False}
+    capture.hint = lambda now: issue
+    capture.diagnostics = lambda: summary
+    rig.frames(20)
+    rig.control.cancel_calibration()
+    assert issue in rig.control.wrist_calibration_error
+    metrics.close()
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    cancelled = [row for row in rows if row["type"] == "wrist_calibration_cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["diagnostics"] == summary
+    assert not any(row["type"] == "wrist_calibration" for row in rows)
+    assert not rig.created and not rig.output.events
+
+
+def test_disabling_logging_keeps_existing_log_unchanged_during_failed_retry(rig):
+    preview(rig)
+    metrics = rig.control.metrics
+    metrics.set_logging(True, asdict(rig.control.engine.config), "camera")
+    path = metrics.path
+    metrics.set_logging(False, {}, "camera")
+    before = path.read_bytes()
+    rig.control.start_wrist_calibration()
+    rig.control.wrist_capture.failure = "两个方向过于接近"
+    finish(rig)
+    assert "两个方向过于接近" in rig.control.wrist_calibration_error
+    assert path.read_bytes() == before
+    assert list(metrics.directory.glob("*.jsonl")) == [path]
+    assert not rig.control.active and not rig.output.events
