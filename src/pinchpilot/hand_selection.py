@@ -22,6 +22,7 @@ class ControlHandSelector:
         self.pending_palm = None
         self.pending_frames = 0
         self.status = self._waiting()
+        self.reason = "no_hand"
 
     def _waiting(self):
         label = {"Left": "左手", "Right": "右手"}.get(self.locked_hand)
@@ -44,11 +45,12 @@ class ControlHandSelector:
             sum(p[1] for p in points) / len(points),
         )
 
-    def _missing(self, timestamp, aspect, status=None):
+    def _missing(self, timestamp, aspect, status=None, reason="no_hand"):
         self.palm = self.pending_palm = None
         self.pending_hand = ""
         self.pending_frames = 0
         self.status = status or self._waiting()
+        self.reason = reason
         return HandFrame(timestamp, aspect=aspect)
 
     def select(self, frames, timestamp, aspect):
@@ -62,15 +64,29 @@ class ControlHandSelector:
         ]
         # Initial auto selection is intentional: expose one hand, or choose a side in UI.
         if not self.locked_hand and len(candidates) > 1:
-            return self._missing(timestamp, aspect, "请先只露出控制手，或指定左手 / 右手")
+            return self._missing(
+                timestamp, aspect, "请先只露出控制手，或指定左手 / 右手", "multiple_hands"
+            )
         if len(eligible) != 1:
-            return self._missing(timestamp, aspect)
+            reason = "ambiguous_control_hand" if len(eligible) > 1 else "no_hand"
+            if candidates and not eligible:
+                same_side = [
+                    f
+                    for f, _ in candidates
+                    if not self.locked_hand or f.handedness == self.locked_hand
+                ]
+                reason = "handedness_uncertain" if same_side else "other_hand_only"
+            elif frames and not candidates:
+                reason = "invalid_hand_geometry"
+            return self._missing(timestamp, aspect, reason=reason)
         frame, palm = eligible[0]
         if any(
             other is not frame and math.dist(palm, other_palm) < self.MIN_SEPARATION
             for other, other_palm in candidates
         ):
-            return self._missing(timestamp, aspect, "双手太近 · 分开后恢复控制手")
+            return self._missing(
+                timestamp, aspect, "双手太近 · 分开后恢复控制手", "hands_too_close"
+            )
         continuous = (
             self.palm is not None
             and self.last_seen is not None
@@ -93,6 +109,7 @@ class ControlHandSelector:
             if self.pending_frames < self.CONFIRM_FRAMES:
                 label = "左手" if frame.handedness == "Left" else "右手"
                 self.status = f"正在确认{label}"
+                self.reason = "confirming_control_hand"
                 return HandFrame(timestamp, aspect=aspect)
         self.locked_hand = frame.handedness
         self.palm, self.last_seen = palm, timestamp
@@ -100,4 +117,5 @@ class ControlHandSelector:
         self.pending_frames = 0
         label = "左手" if self.locked_hand == "Left" else "右手"
         self.status = f"已锁定{label} · 另一只手不参与操作"
+        self.reason = "tracking"
         return frame

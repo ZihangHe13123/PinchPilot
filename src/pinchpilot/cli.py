@@ -50,6 +50,13 @@ def parser() -> argparse.ArgumentParser:
     replay.add_argument("--output", type=Path, required=True)
     replay.add_argument("--profile", type=Path)
     replay.add_argument("--model", type=Path, help="仅使用本项目生成且可信的 joblib 文件")
+    compare = sub.add_parser(
+        "compare-tripod", help="同帧对比三种定位方案；默认使用合成序列，不操作系统鼠标"
+    )
+    compare.add_argument("--recording", type=Path, help="可选：既有关键点录制 JSONL")
+    compare.add_argument("--output", type=Path, required=True, help="输出对比 JSON 文件")
+    compare.add_argument("--seed", type=int, default=20260922)
+    compare.add_argument("--trace", action="store_true", help="包含逐帧虚拟指针与事件")
     return cli
 
 
@@ -181,6 +188,15 @@ def main(argv=None) -> int:
             }
             save_json(args.output, result)
             result = {"output": str(args.output), "events": len(events), "os_events_sent": False}
+        elif args.command == "compare-tripod":
+            from .replay_compare import run_comparison
+
+            run_comparison(args.recording, args.output, seed=args.seed, include_trace=args.trace)
+            result = {
+                "output": str(args.output),
+                "source": "recorded" if args.recording else "synthetic",
+                "os_events_sent": False,
+            }
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (ValueError, OSError, RuntimeError) as error:

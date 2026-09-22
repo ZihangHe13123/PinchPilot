@@ -5,6 +5,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, replace
 
+from .diagnostics import inspect_engine
 from .framing import FramingMonitor, FramingStatus, framing_hint
 from .motion_calibration import RestNoiseCalibration
 from .mouse_session import MouseSession
@@ -36,6 +37,8 @@ class DesktopController:
         self.wrist_calibration_result = None
         self.wrist_calibration_error = ""
         self.framing = FramingMonitor()
+        self.practice_active = False
+        self.last_tick = None
 
     @property
     def framing_status(self):
@@ -195,6 +198,8 @@ class DesktopController:
         return self.last_capture is not None and 0 <= now - self.last_capture < self.FRAME_TIMEOUT
 
     def enable(self):
+        if self.practice_active:
+            raise RuntimeError("测试台只控制虚拟光标；关闭测试台后再手动启用系统鼠标")
         if self.calibrating:
             raise RuntimeError("校准期间不能接管鼠标；请等待完成或取消校准")
         if not self.stop("re-enable"):
@@ -212,6 +217,39 @@ class DesktopController:
         self.result = self.engine.reset()
         self.notice = "鼠标控制已启用 · 拇中捏住接管 · Esc 停止"
         self.metrics.record("control_started", config=asdict(self.engine.config))
+
+    def begin_practice(self):
+        if not self.stop("practice_started"):
+            raise RuntimeError("上一次松键仍在重试，暂不能打开测试台")
+        self.practice_active = True
+        self.engine.pointer = (0.5, 0.5)
+        self.result = self.engine.reset()
+        self.metrics.record("practice_started", source=self.source)
+        self.notice = "测试台已打开 · 手势仅控制测试台里的虚拟光标。"
+
+    def end_practice(self):
+        self.stop("practice_closed")
+        self.practice_active = False
+        self.metrics.record("practice_closed")
+        self.notice = "测试台已关闭；需要时请手动重新启用鼠标控制。"
+
+    def mark_issue(self, category):
+        path = self.metrics.mark_issue(category, self.source, asdict(self.engine.config))
+        self.notice = f"已标记刚才的问题（最多 10 秒诊断摘要）：{path.name}"
+        return path
+
+    def _diagnostic(self, now, packet=None, reason=None, label=None):
+        self.metrics.context_source = self.source
+        self.metrics.context_control = self.active
+        value = inspect_engine(self.engine, self.result, packet)
+        if reason:
+            value = {
+                "reason": reason,
+                "label": label or reason,
+                "state": self.result.state,
+                "values": {},
+            }
+        self.metrics.observe_diagnostic(value, now)
 
     def _sync_session(self):
         if self.session is None:
@@ -260,6 +298,8 @@ class DesktopController:
         self.metrics.frames.clear()
         self.metrics.inference.clear()
         self.metrics.last_capture = None
+        self.metrics.reset_source(source)
+        self.last_tick = None
         self.metrics.record("source", source=source)
 
     def configure(self, config):
@@ -291,6 +331,9 @@ class DesktopController:
             self.metrics.dropped += 1
             self.framing.reset()
             self.stop("invalid_or_stale_frame")
+            self._diagnostic(
+                now, reason="invalid_or_stale_frame", label="帧无效、重复或过期，控制已停止"
+            )
             return False
         self.last_capture = t
         if self.calibration is not None:
@@ -304,19 +347,31 @@ class DesktopController:
             # Reacquisition follows the real cursor if a physical mouse was used in between.
             self.engine.pointer = self.session.position()
         previous = self.engine.state
+        engine_started = time.perf_counter()
         self.result = self.engine.process(packet.frame)
+        self.metrics.observe_timing("engine", (time.perf_counter() - engine_started) * 1000)
         if self.source == "camera":
             self.framing.update(packet.frame, tracked=self.result.grip is not None)
+        self.metrics.context_source = self.source
         self.metrics.observe(packet, self.result, now)
         if self.active:
+            send_started = time.perf_counter()
             self.session.emit(self.result.events)
+            if self.result.events:
+                self.metrics.observe_timing(
+                    "native_emit", (time.perf_counter() - send_started) * 1000
+                )
             if previous != "DRAG" and self.result.state == "DRAG" and self.active:
                 self.metrics.drags += 1
             self._sync_session()
+        self._diagnostic(now, packet)
         return True
 
     def tick(self):
         now = self.clock()
+        if self.last_tick is not None:
+            self.metrics.observe_timing("gui_interval", (now - self.last_tick) * 1000)
+        self.last_tick = now
         if self.wrist_capture is not None:
             if not self.fresh(now) or self.source != "camera":
                 self.cancel_calibration("stale_camera")
@@ -341,6 +396,11 @@ class DesktopController:
         if not self.fresh(now):
             self.framing.reset()
             self.metrics.no_tracking()
+            self._diagnostic(
+                now,
+                reason="stale_camera" if self.source == "camera" else "idle",
+                label="画面过期或等待相机" if self.source == "camera" else "相机关闭",
+            )
         self.metrics.sample(now, self.source, self.active)
 
     def close(self):

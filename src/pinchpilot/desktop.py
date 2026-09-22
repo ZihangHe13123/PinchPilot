@@ -28,6 +28,7 @@ from . import __version__
 from .app import STYLE, Job
 from .desktop_control import DesktopController
 from .framing_overlay import FramingOverlay
+from .metrics_window import MetricsWindow
 from .platform_io import camera_permission, enable_dpi_awareness, request_camera_access
 from .tripod_controls import TripodControls
 from .tripod_demo import tripod_demo_frame
@@ -51,6 +52,8 @@ class DesktopWindow(QMainWindow):
         self.camera_pending = False
         self.closing_requested = False
         self.demo_started = None
+        self.practice_window = None
+        self.metrics_window = None
         self.last_render = 0
         self.control_hand_status = "相机关闭"
         self._calibration_seen = None
@@ -71,6 +74,9 @@ class DesktopWindow(QMainWindow):
         self.camera_authorized.connect(self._camera_authorized, Qt.ConnectionType.QueuedConnection)
         self.escape = QShortcut(QKeySequence("Escape"), self)
         self.escape.activated.connect(self.stop_control)
+        self.issue_shortcut = QShortcut(QKeySequence("F8"), self)
+        self.issue_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.issue_shortcut.activated.connect(self.mark_issue)
         self.timer = QTimer(self)
         self.timer.setInterval(20)
         self.timer.timeout.connect(self._tick)
@@ -202,6 +208,29 @@ class DesktopWindow(QMainWindow):
         folder = QPushButton("打开测试记录")
         folder.clicked.connect(self.open_reports)
         controls.addWidget(folder)
+        self.practice_button = QPushButton("打开交互测试台")
+        self.practice_button.clicked.connect(self.open_practice)
+        controls.addWidget(self.practice_button)
+        diagnostics_button = QPushButton("查看诊断与分段耗时")
+        diagnostics_button.clicked.connect(self.open_diagnostics)
+        controls.addWidget(diagnostics_button)
+        self.issue_category = QComboBox()
+        for label, category in (
+            ("刚才光标抖动", "jitter"),
+            ("刚才有迟滞", "delay"),
+            ("刚才点击没响应", "missed_click"),
+            ("刚才误点击", "unintended_click"),
+            ("刚才丢手 / 断触", "tracking_loss"),
+            ("其他问题", "other"),
+        ):
+            self.issue_category.addItem(label, category)
+        controls.addWidget(self.issue_category)
+        self.issue_button = QPushButton("标记刚才的问题 · F8")
+        self.issue_button.setToolTip(
+            "保存最近最多 10 秒诊断摘要；不含图像或关键点。关闭日志时会单独保存。F8 仅在本应用前台有效。"
+        )
+        self.issue_button.clicked.connect(self.mark_issue)
+        controls.addWidget(self.issue_button)
         self.advanced_button = QPushButton("展开手感设置 ▾")
         self.advanced_button.setCheckable(True)
         controls.addWidget(self.advanced_button)
@@ -447,6 +476,8 @@ class DesktopWindow(QMainWindow):
         )
 
     def _configure(self):
+        if self.practice_window is not None:
+            self.practice_window.close()
         screen = QApplication.primaryScreen()
         size = screen.size() if screen is not None else None
         self.controller.configure(
@@ -787,6 +818,8 @@ class DesktopWindow(QMainWindow):
         self._refresh()
 
     def stop_control(self):
+        if self.practice_window is not None:
+            self.practice_window.close()
         self.controller.stop("user_stop")
         if not self.controller.pending_release:
             self.controller.notice = "鼠标控制已停止 · 相机可继续预览；再次启用会从当前光标接管。"
@@ -808,6 +841,10 @@ class DesktopWindow(QMainWindow):
                 frame = tripod_demo_frame(now, now - self.demo_started)
                 packet = Packet(None, frame, 0.0, 0.0, now)
             if packet is not None and self.controller.consume(packet):
+                if self.practice_window is not None:
+                    self.practice_window.feed(
+                        self.controller.result, self.controller.clock(), self.controller.source
+                    )
                 self.control_hand_status = packet.hand_status or self.control_hand_status
                 if self.preview.isChecked() and not self.isMinimized():
                     self.camera_view.box = self.controller.engine.active_box
@@ -818,6 +855,8 @@ class DesktopWindow(QMainWindow):
                         self.controller.source == "synthetic_demo",
                     )
             self.controller.tick()
+            if self.practice_window is not None and not self.controller.fresh():
+                self.practice_window.invalidate(self.controller.clock(), self.controller.source)
             self._refresh_framing()
             if now - self.last_render >= 0.10:
                 self._refresh()
@@ -839,6 +878,7 @@ class DesktopWindow(QMainWindow):
         self.live_button.setText("关闭鼠标控制" if active else "启用鼠标控制")
         self.live_button.setEnabled(
             not control.calibrating
+            and not control.practice_active
             and not control.pending_release
             and control.source == "camera"
             and control.fresh()
@@ -902,7 +942,59 @@ class DesktopWindow(QMainWindow):
         directory.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
+    def mark_issue(self):
+        try:
+            self.controller.mark_issue(self.issue_category.currentData())
+        except (OSError, ValueError) as error:
+            self.controller.notice = f"问题标记未保存：{error}"
+        self._refresh()
+
+    def open_diagnostics(self):
+        if self.metrics_window is None:
+            self.metrics_window = MetricsWindow(self.controller, self)
+        self.metrics_window.show()
+        self.metrics_window.raise_()
+
+    def open_practice(self):
+        if self.practice_window is not None:
+            self.practice_window.show()
+            self.practice_window.raise_()
+            return
+        candidate = None
+        try:
+            from .practice_window import PracticeWindow
+
+            self.controller.begin_practice()
+            candidate = PracticeWindow(self.workspace, self)
+            candidate.set_config(asdict(self.controller.engine.config))
+            if self.controller.fresh():
+                candidate.feed(
+                    self.controller.result, self.controller.clock(), self.controller.source
+                )
+            else:
+                candidate.invalidate(self.controller.clock(), self.controller.source)
+            candidate.show()
+            candidate.closed.connect(self._practice_closed)
+            self.practice_window = candidate
+        except Exception as error:
+            if candidate is not None:
+                candidate.close()
+                candidate.deleteLater()
+            self.practice_window = None
+            self.controller.end_practice()
+            self.controller.notice = f"无法打开测试台：{error}"
+        self._refresh()
+
+    def _practice_closed(self):
+        self.practice_window = None
+        self.controller.end_practice()
+        self._refresh()
+
     def closeEvent(self, event):
+        if self.practice_window is not None:
+            self.practice_window.close()
+        if self.metrics_window is not None:
+            self.metrics_window.close()
         self.wrist_pose_guide.stop()
         self.framing_overlay.set_hint("", False)
         self.stop_camera()

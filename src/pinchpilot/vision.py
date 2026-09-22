@@ -96,6 +96,11 @@ class Packet:
     fps: float
     captured_at: float
     hand_status: str = ""
+    hand_reason: str = ""
+    capture_ms: float | None = None
+    preprocess_ms: float | None = None
+    ready_at: float | None = None
+    overwritten_results: int = 0  # Cumulative for this worker, not sensor frames lost.
 
 
 class CameraWorker(threading.Thread):
@@ -109,6 +114,7 @@ class CameraWorker(threading.Thread):
         self.lock = threading.Lock()
         self.latest = None
         self.failure = None
+        self.overwritten_results = 0
 
     def pop(self) -> Packet | None:
         with self.lock:
@@ -143,6 +149,7 @@ class CameraWorker(threading.Thread):
             last = time.monotonic()
             fps = 0.0
             while not self.stop_event.is_set():
+                read_started = time.monotonic()
                 ok, bgr = cap.read()
                 captured = time.monotonic()
                 if not ok:
@@ -151,12 +158,25 @@ class CameraWorker(threading.Thread):
                 rgb = cv2.cvtColor(cv2.flip(bgr, 1), cv2.COLOR_BGR2RGB)
                 started = time.monotonic()
                 frame = tracker.process(rgb, captured)
-                inference_ms = (time.monotonic() - started) * 1000
+                ready = time.monotonic()
+                inference_ms = (ready - started) * 1000
                 fps = 0.9 * fps + 0.1 / max(captured - last, 0.001)
                 last = captured
                 with self.lock:
+                    if self.latest is not None:
+                        self.overwritten_results += 1
                     self.latest = Packet(
-                        rgb, frame, inference_ms, fps, captured, tracker.selector.status
+                        rgb,
+                        frame,
+                        inference_ms,
+                        fps,
+                        captured,
+                        tracker.selector.status,
+                        hand_reason=getattr(tracker.selector, "reason", ""),
+                        capture_ms=(captured - read_started) * 1000,
+                        preprocess_ms=(started - captured) * 1000,
+                        ready_at=ready,
+                        overwritten_results=self.overwritten_results,
                     )
         except Exception as error:
             self.failure = str(error)

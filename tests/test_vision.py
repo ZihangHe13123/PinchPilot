@@ -104,13 +104,14 @@ def test_tracker_requests_both_hands_and_selects_control_after_detector_reorderi
     detector.close.assert_called_once()
 
 
-def test_windows_capture_fallback_and_cleanup_without_hardware(tmp_path, monkeypatch):
+@pytest.mark.parametrize("frame_count", [1, 3])
+def test_windows_capture_fallback_and_cleanup_without_hardware(tmp_path, monkeypatch, frame_count):
     failed = SimpleNamespace(isOpened=lambda: False, release=Mock())
     camera = SimpleNamespace(
         isOpened=lambda: True,
         release=Mock(),
         set=Mock(),
-        read=Mock(side_effect=[(True, "rgb"), (False, None)]),
+        read=Mock(side_effect=[(True, "rgb")] * frame_count + [(False, None)]),
     )
     capture = Mock(side_effect=[failed, camera])
     cv = SimpleNamespace(
@@ -140,6 +141,10 @@ def test_windows_capture_fallback_and_cleanup_without_hardware(tmp_path, monkeyp
     assert "未返回画面" in worker.failure
     packet = worker.pop()
     assert packet.rgb == "rgb" and packet.hand_status == "等待右手"
+    assert packet.overwritten_results == frame_count - 1
+    assert packet.capture_ms >= 0 and packet.preprocess_ms >= 0
+    assert packet.ready_at >= packet.captured_at
+    assert packet.inference_ms <= (packet.ready_at - packet.captured_at) * 1000
     create_tracker.assert_called_once_with(tmp_path, preferred_hand="Right")
     assert worker.pop() is None
     failed.release.assert_called_once()
