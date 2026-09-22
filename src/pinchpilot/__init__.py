@@ -1,3 +1,3 @@
 """PinchPilot research prototype. Importing the package never accesses hardware."""
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"

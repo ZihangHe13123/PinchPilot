@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .domain import HandFrame
+from .hand_selection import ControlHandSelector
 
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 MODEL_SHA256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
@@ -47,7 +48,7 @@ def fetch_model(path: Path | None = None) -> Path:
 
 
 class Tracker:
-    def __init__(self, model_path: Path):
+    def __init__(self, model_path: Path, preferred_hand="auto"):
         import mediapipe as mp
 
         self.mp = mp
@@ -56,13 +57,14 @@ class Tracker:
                 model_asset_path=str(model_path), delegate=mp.tasks.BaseOptions.Delegate.CPU
             ),
             running_mode=mp.tasks.vision.RunningMode.VIDEO,
-            num_hands=1,
+            num_hands=2,
             min_hand_detection_confidence=0.65,
             min_hand_presence_confidence=0.65,
             min_tracking_confidence=0.65,
         )
         self.detector = mp.tasks.vision.HandLandmarker.create_from_options(options)
         self.last_ms = -1
+        self.selector = ControlHandSelector(preferred_hand)
 
     def process(self, rgb, timestamp: float) -> HandFrame:
         stamp = max(self.last_ms + 1, int(timestamp * 1000))
@@ -71,11 +73,16 @@ class Tracker:
             self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb), stamp
         )
         aspect = rgb.shape[1] / rgb.shape[0]
-        if not result.hand_landmarks:
-            return HandFrame(timestamp, aspect=aspect)
-        points = tuple((p.x, p.y, p.z) for p in result.hand_landmarks[0])
-        handedness = result.handedness[0][0]
-        return HandFrame(timestamp, points, aspect, handedness.category_name, handedness.score)
+        frames = []
+        for landmarks, categories in zip(result.hand_landmarks, result.handedness):
+            if not categories:
+                continue
+            points = tuple((p.x, p.y, p.z) for p in landmarks)
+            handedness = categories[0]
+            frames.append(
+                HandFrame(timestamp, points, aspect, handedness.category_name, handedness.score)
+            )
+        return self.selector.select(frames, timestamp, aspect)
 
     def close(self) -> None:
         self.detector.close()
@@ -88,14 +95,16 @@ class Packet:
     inference_ms: float
     fps: float
     captured_at: float
+    hand_status: str = ""
 
 
 class CameraWorker(threading.Thread):
     """Single latest-result slot; GUI never queues unbounded stale camera frames."""
 
-    def __init__(self, model_path: Path, camera: int = 0):
+    def __init__(self, model_path: Path, camera: int = 0, preferred_hand="auto"):
         super().__init__(daemon=True, name="pinchpilot-camera")
         self.model_path, self.camera = model_path, camera
+        self.preferred_hand = preferred_hand
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.latest = None
@@ -114,7 +123,7 @@ class CameraWorker(threading.Thread):
 
         cap = tracker = None
         try:
-            tracker = Tracker(self.model_path)
+            tracker = Tracker(self.model_path, preferred_hand=self.preferred_hand)
             if self.stop_event.is_set():
                 return
             backend = (
@@ -146,7 +155,9 @@ class CameraWorker(threading.Thread):
                 fps = 0.9 * fps + 0.1 / max(captured - last, 0.001)
                 last = captured
                 with self.lock:
-                    self.latest = Packet(rgb, frame, inference_ms, fps, captured)
+                    self.latest = Packet(
+                        rgb, frame, inference_ms, fps, captured, tracker.selector.status
+                    )
         except Exception as error:
             self.failure = str(error)
         finally:

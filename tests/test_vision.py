@@ -5,6 +5,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 
 from pinchpilot import vision
@@ -38,13 +39,68 @@ def test_bad_download_does_not_publish_model(tmp_path, monkeypatch):
 
 def test_cancelled_worker_never_opens_camera(tmp_path, monkeypatch):
     detector = SimpleNamespace(close=Mock())
-    monkeypatch.setattr(vision, "Tracker", lambda _: detector)
+    monkeypatch.setattr(vision, "Tracker", lambda _, **kwargs: detector)
     cv = SimpleNamespace(VideoCapture=Mock())
     monkeypatch.setitem(sys.modules, "cv2", cv)
     worker = vision.CameraWorker(tmp_path)
     worker.stop()
     worker.run()
     cv.VideoCapture.assert_not_called()
+    detector.close.assert_called_once()
+
+
+def test_tracker_requests_both_hands_and_selects_control_after_detector_reordering(
+    tmp_path, monkeypatch
+):
+    from pinchpilot.demo import synthetic_hand
+
+    def result(order):
+        return SimpleNamespace(
+            hand_landmarks=[
+                [
+                    SimpleNamespace(x=x, y=y, z=z)
+                    for x, y, z in synthetic_hand(1, x=position).landmarks
+                ]
+                for _, position in order
+            ],
+            handedness=[[SimpleNamespace(category_name=side, score=0.99)] for side, _ in order],
+        )
+
+    right, left = ("Right", 0.35), ("Left", 0.7)
+    detector = SimpleNamespace(
+        detect_for_video=Mock(
+            side_effect=[result([right])] * 3 + [result([left, right]), result([left])]
+        ),
+        close=Mock(),
+    )
+    base_options = Mock(return_value="base")
+    base_options.Delegate.CPU = "CPU"
+    options = Mock(return_value="options")
+    creator = Mock(return_value=detector)
+    mp = SimpleNamespace(
+        tasks=SimpleNamespace(
+            BaseOptions=base_options,
+            vision=SimpleNamespace(
+                HandLandmarkerOptions=options,
+                RunningMode=SimpleNamespace(VIDEO="VIDEO"),
+                HandLandmarker=SimpleNamespace(create_from_options=creator),
+            ),
+        ),
+        Image=Mock(return_value="image"),
+        ImageFormat=SimpleNamespace(SRGB="SRGB"),
+    )
+    monkeypatch.setitem(sys.modules, "mediapipe", mp)
+    tracker = vision.Tracker(tmp_path / "model.task")
+    options.assert_called_once()
+    assert options.call_args.kwargs["num_hands"] == 2
+    rgb = np.zeros((480, 640, 3), dtype=np.uint8)
+    for i in range(4):
+        selected = tracker.process(rgb, 1 + i / 30)
+    assert selected.handedness == "Right"
+    assert selected.landmarks == synthetic_hand(1, x=0.35).landmarks
+    assert not tracker.process(rgb, 1 + 4 / 30).landmarks
+    assert tracker.selector.locked_hand == "Right"
+    tracker.close()
     detector.close.assert_called_once()
 
 
@@ -69,15 +125,22 @@ def test_windows_capture_fallback_and_cleanup_without_hardware(tmp_path, monkeyp
         flip=lambda value, _: value,
         cvtColor=lambda value, _: value,
     )
-    detector = SimpleNamespace(process=lambda rgb, t: HandFrame(t), close=Mock())
-    monkeypatch.setattr(vision, "Tracker", lambda _: detector)
+    detector = SimpleNamespace(
+        process=lambda rgb, t: HandFrame(t),
+        close=Mock(),
+        selector=SimpleNamespace(status="等待右手"),
+    )
+    create_tracker = Mock(return_value=detector)
+    monkeypatch.setattr(vision, "Tracker", create_tracker)
     monkeypatch.setattr(vision, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setitem(sys.modules, "cv2", cv)
-    worker = vision.CameraWorker(tmp_path)
+    worker = vision.CameraWorker(tmp_path, preferred_hand="Right")
     worker.run()
     assert [call.args for call in capture.call_args_list] == [(0, 1), (0, 2)]
     assert "未返回画面" in worker.failure
-    assert worker.pop().rgb == "rgb"
+    packet = worker.pop()
+    assert packet.rgb == "rgb" and packet.hand_status == "等待右手"
+    create_tracker.assert_called_once_with(tmp_path, preferred_hand="Right")
     assert worker.pop() is None
     failed.release.assert_called_once()
     camera.release.assert_called_once()

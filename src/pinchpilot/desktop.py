@@ -11,6 +11,7 @@ from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -48,6 +49,7 @@ class DesktopWindow(QMainWindow):
         self.closing_requested = False
         self.demo_started = None
         self.last_render = 0
+        self.control_hand_status = "相机关闭"
         self.setWindowTitle(f"PinchPilot {__version__} · 桌面测试版")
         self.resize(980, 700)
         self._build_ui()
@@ -134,6 +136,31 @@ class DesktopWindow(QMainWindow):
         self.stop_button.clicked.connect(self.stop_control)
         for button in (self.camera_button, self.live_button, self.stop_button):
             controls.addWidget(button)
+        hand_row = QHBoxLayout()
+        hand_row.addWidget(QLabel("控制手"))
+        self.control_hand = QComboBox()
+        for label, value in (("自动锁定", "auto"), ("只用右手", "Right"), ("只用左手", "Left")):
+            self.control_hand.addItem(label, value)
+        self.control_hand.setToolTip(
+            "自动：先只露出要控制的一只手，锁定后不会换手。\n"
+            "切换选项会停止相机和鼠标控制；重新启动相机后生效。"
+        )
+        hand_row.addWidget(self.control_hand, 1)
+        controls.addLayout(hand_row)
+        self.hand_status = QLabel()
+        self.hand_status.setObjectName("subtitle")
+        self.hand_status.setWordWrap(True)
+        controls.addWidget(self.hand_status)
+        # Keep camera/control/hand selection visible while the settings scroll together.
+        self.settings_area = QScrollArea()
+        self.settings_area.setWidgetResizable(True)
+        self.settings_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        settings_content = QWidget()
+        settings_content.setObjectName("side")
+        self.settings_area.setWidget(settings_content)
+        controls.addWidget(self.settings_area, 1)
+        controls = QVBoxLayout(settings_content)
+        controls.setContentsMargins(0, 0, 0, 0)
         self.right = QCheckBox("启用右键 · 拇指＋无名指")
         self.drag = QCheckBox("启用拖拽 · 食拇保持捏合")
         self.scroll = QCheckBox("启用滚轮 · V 手势上下移动")
@@ -153,11 +180,10 @@ class DesktopWindow(QMainWindow):
         self.advanced_button = QPushButton("展开手感设置 ▾")
         self.advanced_button.setCheckable(True)
         controls.addWidget(self.advanced_button)
-        self.advanced = QScrollArea()
-        self.advanced.setWidgetResizable(True)
-        advanced_content = QWidget()
-        advanced_content.setObjectName("side")
-        advanced_layout = QVBoxLayout(advanced_content)
+        self.advanced = QWidget()
+        self.advanced.setObjectName("side")
+        advanced_layout = QVBoxLayout(self.advanced)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
         self.tripod_controls = TripodControls()
         self.tripod_controls.probe_button.hide()
         advanced_layout.addWidget(self.tripod_controls)
@@ -170,9 +196,8 @@ class DesktopWindow(QMainWindow):
         demo_button = QPushButton("查看合成演示")
         demo_button.clicked.connect(self.start_demo)
         advanced_layout.addWidget(demo_button)
-        self.advanced.setWidget(advanced_content)
         self.advanced.hide()
-        controls.addWidget(self.advanced, 1)
+        controls.addWidget(self.advanced)
         self.advanced_button.toggled.connect(self._show_advanced)
         controls.addStretch()
         body.addWidget(side)
@@ -186,6 +211,12 @@ class DesktopWindow(QMainWindow):
     def _show_advanced(self, enabled):
         self.advanced.setVisible(enabled)
         self.advanced_button.setText("收起手感设置 ▴" if enabled else "展开手感设置 ▾")
+        if enabled:
+            QTimer.singleShot(0, self._reveal_sensitivity)
+
+    def _reveal_sensitivity(self):
+        if self.advanced.isVisible():
+            self.settings_area.ensureWidgetVisible(self.tripod_controls.sensitivity, 0, 55)
 
     def _choices(self):
         return {
@@ -212,6 +243,9 @@ class DesktopWindow(QMainWindow):
             index = settings.get("camera_index", 0)
             if type(index) is int and 0 <= index <= 8:
                 self.camera_index.setValue(index)
+            hand_index = self.control_hand.findData(settings.get("control_hand", "auto"))
+            if hand_index >= 0:
+                self.control_hand.setCurrentIndex(hand_index)
         except (OSError, ValueError) as error:
             self.controller.notice = f"设置读取失败，使用默认设置：{error}"
         self.camera_view.setVisible(self.preview.isChecked())
@@ -225,6 +259,7 @@ class DesktopWindow(QMainWindow):
         settings.update({name: choice.currentData() for name, choice in self._choices().items()})
         settings["span"] = self.tripod_controls.configuration().span
         settings["camera_index"] = self.camera_index.value()
+        settings["control_hand"] = self.control_hand.currentData()
         try:
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.settings_path.with_suffix(".tmp")
@@ -240,6 +275,7 @@ class DesktopWindow(QMainWindow):
         self.tripod_controls.changed.connect(self._configure)
         self.tripod_controls.recenter.connect(self.stop_control)
         self.camera_index.valueChanged.connect(self._camera_changed)
+        self.control_hand.currentIndexChanged.connect(self._camera_changed)
         self.preview.toggled.connect(self._toggle_preview)
         self.on_top.toggled.connect(self._toggle_top)
         self.logging.toggled.connect(self._toggle_logging)
@@ -330,7 +366,10 @@ class DesktopWindow(QMainWindow):
             self._camera_failed(generation, "摄像头权限未获准，请在系统隐私设置中授权启动程序。")
             return
         try:
-            self.worker = CameraWorker(default_model_path(), self.camera_index.value())
+            self.worker = CameraWorker(
+                default_model_path(), self.camera_index.value(), self.control_hand.currentData()
+            )
+            self.control_hand_status = "等待控制手 · 自动模式先只露出一只手"
             self.controller.set_source("camera")
             self.worker.start()
             self.camera_pending = False
@@ -356,12 +395,14 @@ class DesktopWindow(QMainWindow):
             self.stopping_workers.append(self.worker)
             self.worker = None
         self.demo_started = None
+        self.control_hand_status = "相机关闭"
         self.camera_view.set_frame(None, None, self.controller.result)
         self._refresh()
 
     def start_demo(self):
         self.stop_camera()
         self.controller.set_source("synthetic_demo")
+        self.control_hand_status = "合成演示 · 不选择真人控制手"
         self.demo_started = time.monotonic()
         self.controller.notice = "合成演示 · 不接相机、不控制系统鼠标；数据不能当真人识别效果。"
         self._refresh()
@@ -399,6 +440,7 @@ class DesktopWindow(QMainWindow):
                 frame = tripod_demo_frame(now, now - self.demo_started)
                 packet = Packet(None, frame, 0.0, 0.0, now)
             if packet is not None and self.controller.consume(packet):
+                self.control_hand_status = packet.hand_status or self.control_hand_status
                 if self.preview.isChecked() and not self.isMinimized():
                     self.camera_view.box = self.controller.engine.active_box
                     self.camera_view.set_frame(
@@ -433,6 +475,7 @@ class DesktopWindow(QMainWindow):
         if control.source == "camera" and not control.fresh():
             source = "相机等待 / 画面过期"
         self.chip.setText(f"{source} · {'正在控制' if active else '未接管鼠标'}")
+        self.hand_status.setText(self.control_hand_status)
         snapshot = control.session.snapshot() if control.session else {}
         held = "左键按住" if snapshot.get("left_held") else "按键已松开"
         if snapshot.get("right_held"):

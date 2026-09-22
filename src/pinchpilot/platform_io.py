@@ -2,7 +2,9 @@
 
 import ctypes
 import sys
+import time
 
+from .click_sequence import ClickSequence
 from .domain import InputEvent
 
 
@@ -16,12 +18,14 @@ def enable_dpi_awareness() -> None:
 
 
 class MouseOutput:
-    def __init__(self):
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
         self.down = False
         self.right_down = False
         self.scroll_remainder = 0.0
         if sys.platform == "darwin":
             import Quartz
+            from AppKit import NSEvent
             from ApplicationServices import AXIsProcessTrusted
 
             self.q = Quartz
@@ -38,6 +42,7 @@ class MouseOutput:
                 )
             bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
             self.bounds = (bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height)
+            self.clicks = ClickSequence(float(NSEvent.doubleClickInterval()))
         elif sys.platform == "win32":
             self.user32 = ctypes.windll.user32
             self.bounds = (0, 0, self.user32.GetSystemMetrics(0), self.user32.GetSystemMetrics(1))
@@ -124,6 +129,8 @@ class MouseOutput:
         left, top, width, height = self.bounds
         x, y = left + event.x * (width - 1), top + event.y * (height - 1)
         if event.kind == "scroll":
+            if sys.platform == "darwin":
+                self.clicks.interrupt()
             self.scroll_remainder += event.value
             lines = int(self.scroll_remainder)
             if not lines:
@@ -157,8 +164,13 @@ class MouseOutput:
                 event.kind == "move" and self.right_down and not self.down
             )
             button = q.kCGMouseButtonRight if right else q.kCGMouseButtonLeft
+            proposed, count = self.clicks.prepare(event.kind, (x, y), self.clock())
             obj = q.CGEventCreateMouseEvent(None, kind, (x, y), button)
+            if event.kind != "move":
+                # Fresh CGEvents default to clickState=1, even for consecutive clicks.
+                q.CGEventSetIntegerValueField(obj, q.kCGMouseEventClickState, count)
             q.CGEventPost(q.kCGHIDEventTap, obj)
+            self.clicks = proposed
         else:
             if event.kind == "move":
                 if not self.user32.SetCursorPos(round(x), round(y)):
@@ -175,6 +187,8 @@ class MouseOutput:
             self.right_down = event.kind == "right_down"
 
     def close(self) -> None:
+        if sys.platform == "darwin":
+            self.clicks.interrupt()
         failures = []
         for right, held in ((False, self.down), (True, self.right_down)):
             if not held:
@@ -189,7 +203,11 @@ class MouseOutput:
                         point,
                         q.kCGMouseButtonRight if right else q.kCGMouseButtonLeft,
                     )
+                    q.CGEventSetIntegerValueField(
+                        obj, q.kCGMouseEventClickState, self.clicks.release_count(right)
+                    )
                     q.CGEventPost(q.kCGHIDEventTap, obj)
+                    self.clicks.released(right)
                 else:
                     self._send_win(0x0010 if right else 0x0004)
                 if right:

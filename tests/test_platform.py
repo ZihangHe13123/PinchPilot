@@ -95,13 +95,23 @@ def test_windows_cursor_read_failure_is_reported(windows):
     assert calls == []
 
 
-def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
+@pytest.fixture
+def macos(monkeypatch):
     q = SimpleNamespace(
         CGDisplayBounds=lambda _: SimpleNamespace(
             origin=SimpleNamespace(x=0, y=0), size=SimpleNamespace(width=1440, height=900)
         ),
         CGMainDisplayID=lambda: 1,
-        CGEventCreateMouseEvent=Mock(return_value="event"),
+        CGEventCreateMouseEvent=Mock(
+            side_effect=lambda source, kind, point, button: {
+                "kind": kind,
+                "point": point,
+                "button": button,
+            }
+        ),
+        CGEventSetIntegerValueField=Mock(
+            side_effect=lambda event, field, value: event.update(count=value)
+        ),
         CGEventCreateScrollWheelEvent=Mock(return_value="scroll-event"),
         CGEventPost=Mock(),
         CGEventCreate=lambda _: "read-event",
@@ -117,11 +127,25 @@ def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
         kCGMouseButtonRight=1,
         kCGHIDEventTap=0,
         kCGScrollEventUnitLine=1,
+        kCGMouseEventClickState=1,
     )
     monkeypatch.setitem(sys.modules, "Quartz", q)
-    trust = SimpleNamespace(AXIsProcessTrusted=lambda: False)
+    trust = SimpleNamespace(AXIsProcessTrusted=lambda: True)
     monkeypatch.setitem(sys.modules, "ApplicationServices", trust)
+    monkeypatch.setitem(
+        sys.modules,
+        "AppKit",
+        SimpleNamespace(NSEvent=SimpleNamespace(doubleClickInterval=lambda: 0.5)),
+    )
     monkeypatch.setattr(platform_io, "sys", SimpleNamespace(platform="darwin"))
+    clock = SimpleNamespace(now=10.0)
+    output = platform_io.MouseOutput(clock=lambda: clock.now)
+    return output, q, clock, trust
+
+
+def test_mac_adapter_native_calls_are_mocked_and_permission_gated(macos):
+    output, q, _, trust = macos
+    trust.AXIsProcessTrusted = lambda: False
     with pytest.raises(PermissionError):
         platform_io.MouseOutput()
     q.CGEventPost.assert_not_called()
@@ -150,6 +174,121 @@ def test_mac_adapter_native_calls_are_mocked_and_permission_gated(monkeypatch):
     q.CGEventPost.assert_called_once_with(0, "scroll-event")
     output.emit(InputEvent("scroll", value=-1.2))
     q.CGEventCreateScrollWheelEvent.assert_called_with(None, 1, 1, -1)
+
+
+def mac_click(macos, offset, point=(0.5, 0.5), button="left", hold=0.08):
+    output, _, clock, _ = macos
+    clock.now = 10.0 + offset
+    prefix = "right_" if button == "right" else ""
+    output.emit(InputEvent(prefix + "down", *point))
+    clock.now += hold
+    output.emit(InputEvent(prefix + "up", *point))
+
+
+def mac_counts(native):
+    return [
+        call.args[1]["count"]
+        for call in native.CGEventPost.call_args_list
+        if isinstance(call.args[1], dict) and "count" in call.args[1]
+    ]
+
+
+def test_mac_fast_complete_clicks_report_double_and_triple_counts_on_both_edges(macos):
+    output, native, clock, _ = macos
+    mac_click(macos, 0)
+    clock.now = 10.15
+    output.emit(InputEvent("move", 0.501, 0.5))  # Small jitter stays in the same target.
+    mac_click(macos, 0.25, point=(0.501, 0.5))
+    mac_click(macos, 0.5)
+    assert mac_counts(native) == [1, 1, 2, 2, 3, 3]
+    assert not output.down
+
+
+@pytest.mark.parametrize(
+    "interruption", ["timeout", "distance", "move", "drag", "hold", "right", "scroll", "stop"]
+)
+def test_mac_separate_clicks_and_interrupted_sequences_are_not_double_clicks(macos, interruption):
+    output, native, clock, _ = macos
+    if interruption == "drag":
+        output.emit(InputEvent("down", 0.5, 0.5))
+        output.emit(InputEvent("move", 0.55, 0.5))
+        output.emit(InputEvent("move", 0.5, 0.5))
+        output.emit(InputEvent("up", 0.5, 0.5))
+    else:
+        mac_click(macos, 0, hold=0.7 if interruption == "hold" else 0.08)
+    if interruption == "move":
+        output.emit(InputEvent("move", 0.55, 0.5))
+        output.emit(InputEvent("move", 0.5, 0.5))
+    elif interruption == "right":
+        mac_click(macos, 0.12, button="right")
+    elif interruption == "scroll":
+        output.emit(InputEvent("scroll", value=1))
+    elif interruption == "stop":
+        output.close()
+    delay = 0.8 if interruption == "hold" else (0.6 if interruption == "timeout" else 0.3)
+    point = (0.51, 0.5) if interruption == "distance" else (0.5, 0.5)
+    mac_click(macos, delay, point=point)
+    assert mac_counts(native)[-2:] == [1, 1]
+
+
+def test_mac_failed_second_down_does_not_advance_or_hold_and_release_retry_keeps_count(macos):
+    output, native, clock, _ = macos
+    mac_click(macos, 0)
+    clock.now = 10.25
+    native.CGEventPost.side_effect = RuntimeError("post failed")
+    with pytest.raises(RuntimeError):
+        output.emit(InputEvent("down", 0.5, 0.5))
+    assert not output.down
+    native.CGEventPost.side_effect = None
+    output.emit(InputEvent("down", 0.5, 0.5))
+    assert native.CGEventPost.call_args.args[1]["count"] == 2
+    native.CGEventPost.side_effect = RuntimeError("release failed")
+    with pytest.raises(RuntimeError):
+        output.close()
+    assert output.down
+    native.CGEventPost.side_effect = None
+    output.close()
+    assert not output.down
+    assert native.CGEventPost.call_args.args[1]["count"] == 2
+    mac_click(macos, 0.4)
+    assert mac_counts(native)[-2:] == [1, 1]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="AppKit/CGEvent inspection requires macOS")
+def test_30fps_gesture_double_click_is_recognized_by_appkit_without_posting(monkeypatch):
+    import AppKit
+    import ApplicationServices
+    import Quartz
+
+    from pinchpilot.tripod import TripodEngine
+    from pinchpilot.tripod_demo import synthetic_tripod
+
+    monkeypatch.setattr(ApplicationServices, "AXIsProcessTrusted", lambda: True)
+    monkeypatch.setattr(Quartz, "CGPreflightListenEventAccess", lambda: True)
+    posted = Mock()
+    monkeypatch.setattr(Quartz, "CGEventPost", posted)
+    clock = SimpleNamespace(now=10.0)
+    output = platform_io.MouseOutput(clock=lambda: clock.now)
+    engine = TripodEngine()
+    # Real engine debounce, 30 FPS, complete release between short contacts.
+    for frames, contact in ((10, 0.85), (4, 0.10), (4, 0.85), (4, 0.10), (4, 0.85)):
+        for _ in range(frames):
+            clock.now += 1 / 30
+            for event in engine.process(synthetic_tripod(clock.now, contact=contact)).events:
+                output.emit(event)
+    native_buttons = [
+        call.args[1]
+        for call in posted.call_args_list
+        if Quartz.CGEventGetType(call.args[1])
+        in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp)
+    ]
+    assert [AppKit.NSEvent.eventWithCGEvent_(event).clickCount() for event in native_buttons] == [
+        1,
+        1,
+        2,
+        2,
+    ]
+    assert not output.down
 
 
 def test_windows_right_button_is_separate_and_close_releases_both_once(windows):

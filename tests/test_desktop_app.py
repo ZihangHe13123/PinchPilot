@@ -80,14 +80,67 @@ def test_settings_invalid_values_do_not_restore_control(application, tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     (data / "desktop-settings.json").write_text(
-        json.dumps({"right": "false", "span": 500, "camera_index": 999, "active": True})
+        json.dumps(
+            {
+                "right": "false",
+                "span": 500,
+                "camera_index": 999,
+                "control_hand": "Both",
+                "active": True,
+            }
+        )
     )
     win = desktop.DesktopWindow(tmp_path)
     try:
         assert win.right.isChecked() and win.controller.engine.config.span == 0.3
         assert win.camera_index.value() == 0 and not win.controller.active
+        assert win.control_hand.currentData() == "auto"
     finally:
         win.close()
+
+
+def test_control_hand_change_releases_and_stops_camera_then_persists_preference(
+    window, application, monkeypatch
+):
+    window.rig.live()
+    window.rig.frames(4, contact=0.1)
+    assert window.rig.output.down
+    worker = Mock()
+    worker.is_alive.return_value = False
+    window.worker = worker
+    window.control_hand.setCurrentIndex(window.control_hand.findData("Right"))
+    assert not window.controller.active and not window.rig.output.down
+    assert window.controller.source == "none" and window.worker is None
+    worker.stop.assert_called_once()
+    saved = json.loads(window.settings_path.read_text())
+    assert saved["control_hand"] == "Right"
+    second = desktop.DesktopWindow(window.workspace)
+    try:
+        second.timer.stop()
+        assert second.control_hand.currentData() == "Right"
+        create = Mock(return_value=Mock())
+        monkeypatch.setattr(desktop, "CameraWorker", create)
+        second._camera_authorized(second.generation, True)
+        assert create.call_args.args[2] == "Right"
+        create.return_value.start.assert_called_once()
+    finally:
+        second.close()
+
+
+def test_camera_packet_updates_control_hand_status(window):
+    rig = window.rig
+    window.controller.set_source("camera")
+    rig.clock.now += 1 / 30
+    frame = synthetic_tripod(rig.clock.now)
+    worker = Mock(failure=None)
+    worker.pop.return_value = Packet(None, frame, 8, 30, frame.timestamp, "已锁定右手")
+    worker.is_alive.return_value = False
+    window.worker = worker
+    window._tick()
+    window._refresh()
+    assert window.hand_status.text() == "已锁定右手"
+    window.stop_camera()
+    assert window.hand_status.text() == "相机关闭"
 
 
 @pytest.mark.parametrize("span,percent", [(0.2, 150), (0.3, 100), (0.4, 75), (1.2, 25), (3.0, 10)])
