@@ -126,7 +126,9 @@ def test_tripod_engine_to_eight_targets_and_logging(window, task, frozen_click):
         current = point
     assert window.practice.index == 8 and window.practice.misses == 0
     assert not window.practice.active
-    rows = [json.loads(line) for line in window.practice.path.read_text().splitlines()]
+    rows = [
+        json.loads(line) for line in window.practice.path.read_text(encoding="utf-8").splitlines()
+    ]
     assert rows[0]["interaction_mode"] == "tripod" and rows[0]["source"] == "synthetic_demo"
     assert rows[0]["config"]["deadband"] == 0.008
     assert rows[0]["app_version"] == app_module.__version__
@@ -242,7 +244,7 @@ def test_probe_rejects_demo_and_cancels_on_mode_change(window):
     assert window.probe is None
     saved = list((window.report_dir / "jitter").glob("*.json"))
     assert len(saved) == 1
-    assert json.loads(saved[0].read_text())["cancelled"]
+    assert json.loads(saved[0].read_text(encoding="utf-8"))["cancelled"]
 
 
 def probe_result(state="CONTROL", raw=(0.50, 0.50), pointer=(0.50, 0.50)):
@@ -290,7 +292,9 @@ def test_probe_timer_saves_without_waiting_or_changing_output(window, monkeypatc
     now = 110
     window._probe_tick(now)
     assert window.probe is None and window.output is None
-    report = json.loads(next((window.report_dir / "jitter").glob("*.json")).read_text())
+    report = json.loads(
+        next((window.report_dir / "jitter").glob("*.json")).read_text(encoding="utf-8")
+    )
     assert report["sufficient"] and not report["cancelled"]
 
 
@@ -299,5 +303,7 @@ def test_engine_reset_cancels_probe_instead_of_mixing_two_anchors(window):
     window.start_probe()
     window._disable_live()
     assert window.probe is None
-    report = json.loads(next((window.report_dir / "jitter").glob("*.json")).read_text())
+    report = json.loads(
+        next((window.report_dir / "jitter").glob("*.json")).read_text(encoding="utf-8")
+    )
     assert report["cancelled"] and not report["sufficient"]

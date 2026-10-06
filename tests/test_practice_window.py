@@ -47,7 +47,7 @@ def test_waits_for_input_and_start_locks_task_choice(window):
     assert window.cancel_button.isEnabled()
     window.cancel_task()
     assert window.report_path.exists() and not window.session.active
-    report = json.loads(window.report_path.read_text())
+    report = json.loads(window.report_path.read_text(encoding="utf-8"))
     assert report["reason"] == "user_cancelled" and report["source"] == "camera"
 
 
@@ -70,7 +70,7 @@ def test_completed_export_captures_config_not_later_mutation(window):
             now,
             "synthetic_demo",
         )
-    report = json.loads(window.report_path.read_text())
+    report = json.loads(window.report_path.read_text(encoding="utf-8"))
     assert report["status"] == "completed" and report["evidence"] == "synthetic_engineering"
     assert report["engine_config"]["span"] == 0.3
     assert len(report["trials"]) == 5
@@ -82,7 +82,7 @@ def test_close_exports_partial_once_and_emits_signal(window):
     window.close()
     path = window.report_path
     window.close()
-    report = json.loads(path.read_text())
+    report = json.loads(path.read_text(encoding="utf-8"))
     assert spy.count() == 1 and report["reason"] == "window_closed"
     assert len(list(path.parent.glob("practice_*.json"))) == 1
 
@@ -90,7 +90,7 @@ def test_close_exports_partial_once_and_emits_signal(window):
 def test_source_change_is_visible_cancel_and_preserves_original_source(window):
     now = start(window)
     window.feed(EngineResult("CONTROL", (0.5, 0.5), grip=0.2), now + 0.05, "synthetic_demo")
-    report = json.loads(window.report_path.read_text())
+    report = json.loads(window.report_path.read_text(encoding="utf-8"))
     assert report["reason"] == "source_changed" and report["source"] == "camera"
     assert "已取消" in window.metrics.text()
 
@@ -103,7 +103,7 @@ def test_invalidate_disables_start_cancels_held_and_does_not_refresh_input(windo
     assert not window.start_button.isEnabled() and window.last_feed_time is None
     assert window.session.pressed is None and not window.session.active
     assert "输入已过期" in window.metrics.text()
-    report = json.loads(window.report_path.read_text())
+    report = json.loads(window.report_path.read_text(encoding="utf-8"))
     assert report["reason"] == "stale_input" and report["input_interruptions"] == 1
     window.invalidate(now + 0.1, "camera")
     assert len(list(window.report_path.parent.glob("*.json"))) == 1
@@ -117,7 +117,7 @@ def test_invalidate_before_first_frame_cannot_start(window):
 def test_export_failure_is_visible_and_retry_succeeds(window, tmp_path):
     start(window)
     blocker = tmp_path / "reports"
-    blocker.write_text("not a folder")
+    blocker.write_text("not a folder", encoding="utf-8")
     window.cancel_task()
     assert window.report_path is None and "结果尚未保存" in window.feedback.text()
     blocker.unlink()

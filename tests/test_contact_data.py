@@ -21,9 +21,9 @@ from pinchpilot.tripod_demo import synthetic_tripod
 
 
 def update(path, change):
-    value = json.loads(path.read_text())
+    value = json.loads(path.read_text(encoding="utf-8"))
     change(value)
-    path.write_text(json.dumps(value))
+    path.write_text(json.dumps(value), encoding="utf-8")
 
 
 def test_continuous_recording_keeps_missing_frames_and_templates_unknown(tmp_path):
@@ -191,11 +191,11 @@ def test_deterministic_fixture_content_and_windows(tmp_path):
 def test_identity_whitespace_cannot_create_a_separate_group(tmp_path):
     manifest = create_synthetic_contact_dataset(tmp_path)
     recording = tmp_path / "synthetic_P5.jsonl"
-    rows = recording.read_text().splitlines()
+    rows = recording.read_text(encoding="utf-8").splitlines()
     header = json.loads(rows[0])
     header["participant"] = " synthetic_P1 "
     rows[0] = json.dumps(header)
-    recording.write_text("\n".join(rows) + "\n")
+    recording.write_text("\n".join(rows) + "\n", encoding="utf-8")
     import hashlib
 
     update(

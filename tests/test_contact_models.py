@@ -64,10 +64,10 @@ def test_synthetic_training_requires_explicit_override(tmp_path):
 
 def test_training_cannot_overwrite_partial_or_unrelated_artifacts(tmp_path):
     previous = tmp_path / "metrics.json"
-    previous.write_text("preserve me")
+    previous.write_text("preserve me", encoding="utf-8")
     with pytest.raises(ValueError, match="新目录"):
         train_contacts(dataset(), tmp_path, allow_synthetic=True)
-    assert previous.read_text() == "preserve me"
+    assert previous.read_text(encoding="utf-8") == "preserve me"
 
 
 @pytest.mark.parametrize("split", ("train", "validation", "test"))
@@ -113,7 +113,7 @@ def test_forest_roundtrip_metrics_and_simultaneous_contacts(forest):
             matrix = metrics["learned"]["channels"][name]["confusion_matrix"]
             assert sum(map(sum, matrix)) == 48
             assert metrics["rules"]["channels"][name]["f1"] == 1
-    assert report == json.loads((output / "metrics.json").read_text())
+    assert report == json.loads((output / "metrics.json").read_text(encoding="utf-8"))
     assert "click" in report["limitations"][0]
 
 
@@ -146,9 +146,9 @@ def test_inference_shape_finite_and_empty(forest):
 def test_bad_metadata_rejected_before_joblib_load(forest, tmp_path, monkeypatch, key, value):
     _, output, _ = forest
     shutil.copytree(output, tmp_path, dirs_exist_ok=True)
-    metadata = json.loads((tmp_path / "metadata.json").read_text())
+    metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
     metadata[key] = value
-    (tmp_path / "metadata.json").write_text(json.dumps(metadata))
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     monkeypatch.setattr(
         contact_models.joblib, "load", lambda _: pytest.fail("pickle should not load")
     )

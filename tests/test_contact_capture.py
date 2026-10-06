@@ -79,12 +79,12 @@ def test_records_every_new_frame_including_missing_without_backfill_or_labels(wi
     assert frames == expected and window.count == 3 and window.missing_count == 1
     assert metadata["source"] == "camera" and metadata["labels_inferred"] is False
     assert not metadata["stores_images"]
-    labels = json.loads(window.annotation_path.read_text())
+    labels = json.loads(window.annotation_path.read_text(encoding="utf-8"))
     assert labels["reviewed"] is False and labels["label_source"] == "unreviewed"
     assert labels["intervals"] == [
         {"start": 0, "end": 3, "middle": None, "index": None, "ring": None}
     ]
-    report = json.loads(window.summary_path.read_text())
+    report = json.loads(window.summary_path.read_text(encoding="utf-8"))
     assert report["frames_written"] == 3 and report["missing_hand_frames"] == 1
     assert report["stop_reason"] == "user_stop" and not report["partial"]
 
@@ -108,7 +108,7 @@ def test_discontinuity_stops_and_preserves_only_valid_prefix(window, failure):
         feed(window, source="synthetic_demo")
     assert not window.recorder_active
     assert read_contact_recording(window.recording_path)[1] == [frame]
-    summary = json.loads(window.summary_path.read_text())
+    summary = json.loads(window.summary_path.read_text(encoding="utf-8"))
     assert summary["partial"] and summary["frames_written"] == 1
     assert window.annotation_path.exists()
 
@@ -158,7 +158,7 @@ def test_zero_frame_recording_has_no_fabricated_annotation(window):
     start(window)
     window.stop_recording()
     assert window.count == 0 and window.annotation_path is None
-    assert len(window.recording_path.read_text().splitlines()) == 1
+    assert len(window.recording_path.read_text(encoding="utf-8").splitlines()) == 1
     assert "没有采到新帧" in window.output_label.text()
 
 
@@ -190,7 +190,7 @@ def test_template_failure_preserves_recording_and_reports_unreviewed_error(windo
     assert read_contact_recording(window.recording_path)[1] == [frame]
     assert window.annotation_path is None
     assert "未能生成待标注模板" in window.status_label.text()
-    assert json.loads(window.summary_path.read_text())["labels_reviewed"] is False
+    assert json.loads(window.summary_path.read_text(encoding="utf-8"))["labels_reviewed"] is False
 
 
 def test_start_failure_stays_visible_after_periodic_refresh(window, monkeypatch):
@@ -229,7 +229,7 @@ def test_close_saves_partial_emits_once_and_destroys_child(application, tmp_path
     item.close()
     assert spy.count() == 1 and not item.recorder_active
     assert read_contact_recording(path)[1] == [frame]
-    assert json.loads(summary.read_text())["stop_reason"] == "window_closed"
+    assert json.loads(summary.read_text(encoding="utf-8"))["stop_reason"] == "window_closed"
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     application.processEvents()
     assert not parent.findChildren(ContactCaptureWindow)

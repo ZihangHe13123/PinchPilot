@@ -90,7 +90,7 @@ def test_motion_profile_and_calibration_preferences_survive_restart(window):
     controls = window.tripod_controls
     controls.restore_noise(0.001, 0.002)
     controls.motion_profile.setCurrentIndex(controls.motion_profile.findData("adaptive"))
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["motion_profile"] == "adaptive"
     assert saved["rest_noise_x"] == 0.001 and saved["rest_noise_y"] == 0.002
     second = desktop.DesktopWindow(window.workspace)
@@ -192,7 +192,7 @@ def test_calibration_ui_disables_control_tracks_progress_and_saves_once(window, 
     save.assert_called_once()
     assert window.calibration_progress.value() == 100
     assert "3.2 逻辑像素" in window.calibration_status.text()
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["rest_noise_x"] == 0.0004 and saved["rest_noise_y"] == 0.0006
     window.clear_calibration_button.click()
     window._refresh()
@@ -200,7 +200,7 @@ def test_calibration_ui_disables_control_tracks_progress_and_saves_once(window, 
     assert window.controller.engine.config.rest_noise_y == 0
     assert window.tripod_controls.rest_noise_x == 0
     assert "尚未校准" in window.calibration_status.text()
-    assert json.loads(window.settings_path.read_text())["rest_noise_x"] == 0
+    assert json.loads(window.settings_path.read_text(encoding="utf-8"))["rest_noise_x"] == 0
 
 
 def test_controls_persist_only_preferences_and_restart_requires_explicit_enable(
@@ -216,7 +216,7 @@ def test_controls_persist_only_preferences_and_restart_requires_explicit_enable(
     window.preview.setChecked(False)
     window.logging.setChecked(False)
     window.tripod_controls.stability.setCurrentIndex(2)
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["right"] is False and saved["drag"] is False
     assert "active" not in saved and "source" not in saved
     second = desktop.DesktopWindow(window.workspace)
@@ -248,7 +248,8 @@ def test_settings_invalid_values_do_not_restore_control(application, tmp_path):
                 "active": True,
                 "edge_assist": "false",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     win = desktop.DesktopWindow(tmp_path)
     try:
@@ -276,7 +277,7 @@ def test_control_hand_change_releases_and_stops_camera_then_persists_preference(
     assert not window.controller.active and not window.rig.output.down
     assert window.controller.source == "none" and window.worker is None
     worker.stop.assert_called_once()
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["control_hand"] == "Right"
     second = desktop.DesktopWindow(window.workspace)
     try:
@@ -311,7 +312,9 @@ def test_camera_packet_updates_control_hand_status(window):
 def test_sensitivity_restores_old_and_continuous_settings(application, tmp_path, span, percent):
     data = tmp_path / "data"
     data.mkdir()
-    (data / "desktop-settings.json").write_text(json.dumps({"span": span, "stability": 0.014}))
+    (data / "desktop-settings.json").write_text(
+        json.dumps({"span": span, "stability": 0.014}), encoding="utf-8"
+    )
     win = desktop.DesktopWindow(tmp_path)
     try:
         win.timer.stop()
@@ -319,9 +322,11 @@ def test_sensitivity_restores_old_and_continuous_settings(application, tmp_path,
         assert win.controller.engine.config.span == pytest.approx(span)
         assert win.controller.engine.config.deadband == 0.014
         assert win.controller.engine.config.motion_profile == "classic"
-        assert json.loads(win.settings_path.read_text())["motion_profile"] == "classic"
+        assert (
+            json.loads(win.settings_path.read_text(encoding="utf-8"))["motion_profile"] == "classic"
+        )
         win.tripod_controls.sensitivity.setValue(42)
-        saved = json.loads(win.settings_path.read_text())
+        saved = json.loads(win.settings_path.read_text(encoding="utf-8"))
         assert saved["span"] == pytest.approx(0.3 / 0.42)
         win.tripod_controls.restore_span(saved["span"])
         assert win.tripod_controls.sensitivity.value() == 42
@@ -378,7 +383,7 @@ def test_scroll_reaches_output_metrics_and_settings_switch_stops_it(window):
     assert window.controller.engine.config.scroll_gain == 30
     window.scroll.setChecked(False)
     assert not window.controller.engine.config.scroll_enabled
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["scroll"] is False and saved["scroll_speed"] == 30
 
 
@@ -539,7 +544,7 @@ def test_edge_assist_preference_persists_without_stopping_control(window):
     assert not window.framing_overlay.isVisible()
     assert window.framing_status_label.isHidden()
     assert window.camera_view.frame_edges == ()
-    assert json.loads(window.settings_path.read_text())["edge_assist"] is False
+    assert json.loads(window.settings_path.read_text(encoding="utf-8"))["edge_assist"] is False
     second = desktop.DesktopWindow(window.workspace)
     try:
         second.timer.stop()

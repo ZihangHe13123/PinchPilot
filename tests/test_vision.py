@@ -19,7 +19,10 @@ def test_model_download_verifies_bytes_and_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(vision.urllib.request, "urlopen", download)
     path = vision.fetch_model(tmp_path / "test.task")
     assert path.read_bytes() == payload
-    assert json.loads(path.with_suffix(".json").read_text())["sha256"] == vision.MODEL_SHA256
+    assert (
+        json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["sha256"]
+        == vision.MODEL_SHA256
+    )
     vision.fetch_model(path)
     assert download.call_count == 1
     path.write_bytes(b"bad cache")

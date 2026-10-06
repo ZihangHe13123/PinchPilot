@@ -136,14 +136,16 @@ def test_real_engine_completes_eight_synthetic_targets_with_mode_metadata(window
             frames(6, dx=dx, dy=dy, bend=0.18)
             frames(6, dx=dx, dy=dy)
     assert not window.practice.active
-    rows = [json.loads(line) for line in window.practice.path.read_text().splitlines()]
+    rows = [
+        json.loads(line) for line in window.practice.path.read_text(encoding="utf-8").splitlines()
+    ]
     assert rows[0]["interaction_mode"] == mode
     assert rows[0]["app_version"] == app_module.__version__
     assert rows[0]["source"] == "synthetic_demo"
     assert rows[0]["config"]["mode"] == mode
     assert rows[-1]["completed"] and rows[-1]["hits"] == 8 and rows[-1]["misses"] == 0
     window.event_file.flush()
-    with open(window.event_file.name) as log:
+    with open(window.event_file.name, encoding="utf-8") as log:
         events = [json.loads(line) for line in log]
     assert len(events) == 16
     assert all(e["interaction_mode"] == mode and e["output"] == "preview" for e in events)

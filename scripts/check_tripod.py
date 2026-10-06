@@ -147,14 +147,14 @@ def main():
     for kind in ("independent", "correlated"):
         report = noise_check(kind)
         encoded = json.dumps(report, indent=2)
-        (directory / f"noise-{kind}.json").write_text(encoded)
+        (directory / f"noise-{kind}.json").write_text(encoded, encoding="utf-8")
         comparison = {
             "raw_rms": report["raw"]["rms_radius"],
             "output_rms": report["output"]["rms_radius"],
         }
         reference = Path(f"reports/verification/tripod/noise-{kind}.json")
         if reference.exists():
-            old_rows = json.loads(reference.read_text())["rows"]
+            old_rows = json.loads(reference.read_text(encoding="utf-8"))["rows"]
             fields = ("timestamp", "state", "eligible", "raw", "output")
             same = len(old_rows) == len(report["rows"]) and all(
                 all(old[key] == new[key] for key in fields)
@@ -167,7 +167,7 @@ def main():
     summary["limits"] = (
         "Declared synthetic noise only. No real tracking, intent, fatigue or accuracy conclusion."
     )
-    (directory / "checks.json").write_text(json.dumps(summary, indent=2))
+    (directory / "checks.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
 
 

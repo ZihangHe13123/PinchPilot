@@ -76,7 +76,7 @@ def test_practice_completes_and_labels_synthetic_evidence(application, tmp_path)
             EngineResult("PRESSED", point, [InputEvent("move", *point), InputEvent("down", *point)])
         )
         view.feed(EngineResult("POINT", point, [InputEvent("up", *point)]))
-    rows = [json.loads(line) for line in view.path.read_text().splitlines()]
+    rows = [json.loads(line) for line in view.path.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["source"] == "synthetic_demo"
     assert rows[-1]["completed"] and rows[-1]["hits"] == 8
     assert not view.active and not view.pressed
@@ -140,7 +140,9 @@ def test_motion_selection_releases_output_stops_trial_and_preserves_thresholds(w
     assert window.engine.state == "WAIT_OPEN"
     assert window.engine.config.engage_ratio == 0.30
     assert window.engine.active_box == pytest.approx((0.4, 0.4, 0.6, 0.6))
-    rows = [json.loads(line) for line in window.practice.path.read_text().splitlines()]
+    rows = [
+        json.loads(line) for line in window.practice.path.read_text(encoding="utf-8").splitlines()
+    ]
     assert rows[0]["config"]["reanchor_on_open"]
     assert rows[0]["initial_pointer"] == [0.5, 0.5]
     assert rows[-1]["completed"] is False
@@ -153,7 +155,7 @@ def test_profile_changes_do_not_overwrite_movement_preferences(window):
     path.parent.mkdir(parents=True)
     old_config = asdict(EngineConfig(engage_ratio=0.29, release_ratio=0.45))
     old_config.pop("reanchor_on_open")  # A v0.1 profile has no clutch setting.
-    path.write_text(json.dumps({"participant": "P01", "config": old_config}))
+    path.write_text(json.dumps({"participant": "P01", "config": old_config}), encoding="utf-8")
     window.load_profile()
     assert window.engine.config.engage_ratio == 0.29
     for change in (lambda: None, window.reset_profile):
@@ -189,6 +191,6 @@ def test_recording_blocks_movement_changes_and_event_log_identifies_mode(window)
     window.finish_recording()
     assert window.motion_range.isEnabled() and window.clutch_check.isEnabled()
     window._dispatch(EngineResult("PRESSED", (0.5, 0.5), [InputEvent("down", 0.5, 0.5)]))
-    row = json.loads(Path(window.event_file.name).read_text().splitlines()[-1])
+    row = json.loads(Path(window.event_file.name).read_text(encoding="utf-8").splitlines()[-1])
     assert row["config"]["reanchor_on_open"]
     assert row["config"]["box_left"] == 0.35

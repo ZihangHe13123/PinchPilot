@@ -68,7 +68,10 @@ def main():
                 if mode == "finger-flex":
                     frames(6, dx=dx, dy=dy, bend=0.18)
                     frames(6, dx=dx, dy=dy)
-            rows = [json.loads(line) for line in window.practice.path.read_text().splitlines()]
+            rows = [
+                json.loads(line)
+                for line in window.practice.path.read_text(encoding="utf-8").splitlines()
+            ]
             result = rows[-1]
             assert result["completed"] and result["hits"] == 8 and result["misses"] == 0
             summary["modes"][mode] = {

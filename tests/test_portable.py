@@ -55,7 +55,7 @@ def test_missing_model_blocks_start_and_saves_error(portable, tmp_path, monkeypa
     assert portable.main(["start"], root=tmp_path) == 1
     execute.assert_not_called()
     logs = list((tmp_path / "reports/startup").glob("*-launcher-error.log"))
-    assert len(logs) == 1 and "Bundled model missing" in logs[0].read_text()
+    assert len(logs) == 1 and "Bundled model missing" in logs[0].read_text(encoding="utf-8")
 
 
 def test_normal_start_is_explicit_desktop_without_auto_control(portable, tmp_path, monkeypatch):
@@ -85,7 +85,7 @@ def test_child_ignores_host_python_environment(portable, tmp_path, monkeypatch):
     code = portable.execute(
         ["-c", "import sys; assert sys.flags.isolated; print('isolated')"], tmp_path, log
     )
-    assert code == 0 and log.read_text().strip() == "isolated"
+    assert code == 0 and log.read_text(encoding="utf-8").strip() == "isolated"
 
 
 @pytest.mark.parametrize("damaged", [False, True])
@@ -97,7 +97,7 @@ def test_diagnosis_does_not_touch_settings_or_fetch_missing_model(
         model.write_bytes(b"damaged")
     settings = tmp_path / "data/desktop-settings.json"
     settings.parent.mkdir()
-    settings.write_text('{"span": 1.2}')
+    settings.write_text('{"span": 1.2}', encoding="utf-8")
     commands = []
 
     def execute(arguments, root, log, timeout):
@@ -110,10 +110,12 @@ def test_diagnosis_does_not_touch_settings_or_fetch_missing_model(
 
     monkeypatch.setattr(portable, "execute", execute)
     assert portable.main(["diagnose"], root=tmp_path) == int(damaged)
-    assert settings.read_text() == '{"span": 1.2}'
+    assert settings.read_text(encoding="utf-8") == '{"span": 1.2}'
     assert any("Tracker" in " ".join(command) for command in commands) is not damaged
     report = json.loads(
-        next((tmp_path / "reports/diagnostics").rglob("diagnostics.json")).read_text()
+        next((tmp_path / "reports/diagnostics").rglob("diagnostics.json")).read_text(
+            encoding="utf-8"
+        )
     )
     assert report["passed"] is not damaged
     assert not report["camera_opened"] and not report["os_events_sent"]

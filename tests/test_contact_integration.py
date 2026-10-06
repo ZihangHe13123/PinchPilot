@@ -96,7 +96,7 @@ def test_ml_cli_fixture_inspection_template_and_default_synthetic_refusal(tmp_pa
     recording = root / "synthetic_P1.jsonl"
     blank = tmp_path / "blank-labels.json"
     assert main(["ml-label-template", str(recording), "--output", str(blank)]) == 0
-    assert not json.loads(blank.read_text())["reviewed"]
+    assert not json.loads(blank.read_text(encoding="utf-8"))["reviewed"]
     assert main(["ml-train", str(manifest), "--output", str(tmp_path / "model")]) == 2
     assert "合成数据默认拒绝" in capsys.readouterr().err
     assert not (tmp_path / "model").exists()

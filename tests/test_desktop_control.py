@@ -269,11 +269,13 @@ def test_logging_toggle_and_telemetry_are_local_and_source_labelled(rig):
     rig.frames(4, contact=0.1)
     rig.frames(8)
     metrics.set_logging(False, {}, "camera")
-    rows = [json.loads(line) for line in first_path.read_text().splitlines()]
+    rows = [json.loads(line) for line in first_path.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["stores_images"] is False
     assert rows[-1]["type"] == "session_end"
     assert rows[-1]["summary"]["sent"]["down"] == 1
-    assert "landmarks" not in first_path.read_text() and "rgb" not in first_path.read_text()
+    assert "landmarks" not in first_path.read_text(
+        encoding="utf-8"
+    ) and "rgb" not in first_path.read_text(encoding="utf-8")
     before = first_path.read_bytes()
     rig.frames(30)
     assert first_path.read_bytes() == before

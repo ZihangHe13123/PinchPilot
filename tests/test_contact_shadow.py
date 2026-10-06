@@ -161,7 +161,7 @@ def report_fixture(
     from pinchpilot import contact_models
 
     recording = tmp_path / "recording.jsonl"
-    recording.write_text("input fixture remains unchanged")
+    recording.write_text("input fixture remains unchanged", encoding="utf-8")
     model = tmp_path / "model"
     model.mkdir()
     metadata = {
@@ -200,7 +200,7 @@ def test_report_preserves_sources_and_does_not_emit_landmarks_or_engine_events(
     output = tmp_path / "nested" / "report.json"
     before = recording.read_bytes()
     report = run_shadow(recording, model, output)
-    assert json.loads(output.read_text()) == report
+    assert json.loads(output.read_text(encoding="utf-8")) == report
     assert recording.read_bytes() == before
     assert report["source"] == recording_source
     assert report["model_training_source"] == model_source
@@ -217,25 +217,25 @@ def test_report_preserves_sources_and_does_not_emit_landmarks_or_engine_events(
         "stores_keypoints",
     ):
         assert report[flag] is False
-    assert "landmarks" not in output.read_text()
+    assert "landmarks" not in output.read_text(encoding="utf-8")
     assert all("events" not in row for row in report["trace"])
 
 
 def test_report_limit_and_input_protection_leave_existing_files_unchanged(tmp_path, monkeypatch):
     recording, model, _ = report_fixture(tmp_path, monkeypatch)
     output = tmp_path / "report.json"
-    output.write_text("previous report")
+    output.write_text("previous report", encoding="utf-8")
     monkeypatch.setattr(contact_shadow, "MAX_REPORT_FRAMES", 5)
     with pytest.raises(ValueError, match="frames"):
         run_shadow(recording, model, output)
-    assert output.read_text() == "previous report"
+    assert output.read_text(encoding="utf-8") == "previous report"
     with pytest.raises(ValueError, match="input recording"):
         run_shadow(recording, model, recording)
     metadata = model / "metadata.json"
-    metadata.write_text("existing model")
+    metadata.write_text("existing model", encoding="utf-8")
     with pytest.raises(ValueError, match="model artifact"):
         run_shadow(recording, model, metadata)
-    assert metadata.read_text() == "existing model"
+    assert metadata.read_text(encoding="utf-8") == "existing model"
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -264,10 +264,10 @@ def test_actual_recording_read_and_legacy_source_are_preserved(tmp_path, monkeyp
 
 def test_atomic_temp_path_cannot_overwrite_recording(tmp_path, monkeypatch):
     recording = tmp_path / "report.json.tmp"
-    recording.write_text("source must survive")
+    recording.write_text("source must survive", encoding="utf-8")
     with pytest.raises(ValueError, match="input recording"):
         run_shadow(recording, tmp_path / "model", tmp_path / "report.json")
-    assert recording.read_text() == "source must survive"
+    assert recording.read_text(encoding="utf-8") == "source must survive"
 
 
 def test_shadow_import_and_inference_do_not_load_hardware_or_native_modules():

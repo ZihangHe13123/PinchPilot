@@ -21,7 +21,7 @@ def test_fixed_seed_is_deterministic_and_every_profile_gets_identical_frames(tmp
     second = run_comparison(None, tmp_path / "second.json", seed=935)
     assert first == second
     assert (tmp_path / "first.json").read_bytes() == (tmp_path / "second.json").read_bytes()
-    assert json.loads((tmp_path / "first.json").read_text()) == first
+    assert json.loads((tmp_path / "first.json").read_text(encoding="utf-8")) == first
     assert first["source"] == "synthetic" and first["seed"] == 935
     assert not first["camera_opened"] and not first["os_events_sent"] and not first["models_loaded"]
     assert set(first["cases"]) == {
@@ -144,16 +144,16 @@ def test_invalid_recordings_fail_without_overwriting_existing_report(tmp_path, f
     before = recording.read_bytes()
     with pytest.raises(ValueError):
         run_comparison(recording, output)
-    assert output.read_text() == "prior result"
+    assert output.read_text(encoding="utf-8") == "prior result"
     assert recording.read_bytes() == before
 
 
 def test_report_cannot_overwrite_source_and_bad_seed_cannot_create_output(tmp_path):
     source = tmp_path / "source.jsonl"
-    source.write_text("recording must remain intact")
+    source.write_text("recording must remain intact", encoding="utf-8")
     with pytest.raises(ValueError, match="overwrite"):
         run_comparison(source, source)
-    assert source.read_text() == "recording must remain intact"
+    assert source.read_text(encoding="utf-8") == "recording must remain intact"
     output = tmp_path / "not-created.json"
     for seed in (-1, True, 1.2, 2**64):
         with pytest.raises(ValueError, match="seed"):

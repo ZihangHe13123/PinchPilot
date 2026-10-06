@@ -31,7 +31,7 @@ def test_issue_marker_contains_only_recent_context_and_respects_logging_off(tmp_
         clock.now = 100 + i / 30
         metrics.observe_diagnostic(diagnostic("moving" if i < 420 else "grip_unstable"), clock.now)
     path = metrics.mark_issue("jitter", "camera", {"span": 0.3})
-    report = json.loads(path.read_text())
+    report = json.loads(path.read_text(encoding="utf-8"))
     assert metrics.file is None
     assert report["user_reported"] and not report["stores_keypoints"]
     assert report["context"][-1]["reason"] == "grip_unstable"
@@ -39,7 +39,7 @@ def test_issue_marker_contains_only_recent_context_and_respects_logging_off(tmp_
         clock.now - metrics.started - row["elapsed_s"] <= 10.001 for row in report["context"]
     )
     assert all(row["source"] == "camera" for row in report["context"])
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert not any(key in text for key in ('"landmarks"', '"rgb"', '"pointer"'))
     assert list(tmp_path.iterdir()) == [path]
 
@@ -48,7 +48,7 @@ def test_issue_marker_flushes_existing_log_without_new_file(tmp_path):
     metrics = TrialMetrics(tmp_path, Clock())
     metrics.set_logging(True, {}, "synthetic_demo")
     path = metrics.mark_issue("missed_click", "synthetic_demo", {})
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["type"] == "issue_marker"
     assert rows[-1]["source"] == "synthetic_demo"
     assert len(list(tmp_path.iterdir())) == 1
@@ -61,7 +61,7 @@ def test_expired_context_and_invalid_mark_category(tmp_path):
     metrics.observe_diagnostic(diagnostic(), clock.now)
     clock.now += 11
     path = metrics.mark_issue("other", "none", {})
-    assert json.loads(path.read_text())["context"] == []
+    assert json.loads(path.read_text(encoding="utf-8"))["context"] == []
     with pytest.raises(ValueError):
         metrics.mark_issue("bad", "none", {})
 

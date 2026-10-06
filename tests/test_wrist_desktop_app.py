@@ -109,7 +109,7 @@ def test_wrist_preferences_restart_and_clear_keep_position_calibration(window):
     controls.restore_wrist_calibration(CALIBRATION)
     controls.motion_profile.setCurrentIndex(controls.motion_profile.findData("adaptive"))
     select_basis(window, "wrist")
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["pointer_basis"] == "wrist"
     assert saved["wrist_calibration"] == list(CALIBRATION)
     assert saved["rest_noise_x"] == 0.001 and saved["motion_profile"] == "adaptive"
@@ -132,7 +132,9 @@ def test_wrist_preferences_restart_and_clear_keep_position_calibration(window):
         second.clear_wrist_calibration_button.click()
         assert second.controller.engine.config.wrist_calibration == ()
         assert not second.live_button.isEnabled()
-        assert json.loads(second.settings_path.read_text())["wrist_calibration"] == []
+        assert (
+            json.loads(second.settings_path.read_text(encoding="utf-8"))["wrist_calibration"] == []
+        )
         select_basis(second, "position")
         assert second.controller.engine.config.rest_noise_x == 0.001
         assert second.tripod_controls.motion_profile.currentData() == "adaptive"
@@ -147,7 +149,7 @@ def test_wrist_preferences_restart_and_clear_keep_position_calibration(window):
 def test_pre_wrist_settings_migrate_to_position(application, tmp_path, stored, expected):
     data = tmp_path / "data"
     data.mkdir()
-    (data / "desktop-settings.json").write_text(json.dumps(stored))
+    (data / "desktop-settings.json").write_text(json.dumps(stored), encoding="utf-8")
     rig = Rig(tmp_path / "reports")
     win = desktop.DesktopWindow(tmp_path, controller=rig.control)
     try:
@@ -171,7 +173,8 @@ def test_corrupt_saved_wrist_calibration_requires_calibration_before_enable(appl
                 "wrist_calibration": [0] * 15,
                 "unified_mode_seen": True,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     rig = Rig(tmp_path / "reports")
     win = desktop.DesktopWindow(tmp_path, controller=rig.control)
@@ -225,7 +228,9 @@ def test_wrist_calibration_ui_progress_saves_once_and_requires_manual_enable(win
     assert window.live_button.isEnabled() and not window.live_button.isChecked()
     assert "手动启用" in window.wrist_calibration_status.text()
     assert window.tripod_controls.wrist_calibration == CALIBRATION
-    assert json.loads(window.settings_path.read_text())["wrist_calibration"] == list(CALIBRATION)
+    assert json.loads(window.settings_path.read_text(encoding="utf-8"))[
+        "wrist_calibration"
+    ] == list(CALIBRATION)
     assert not window.rig.created and not window.rig.output.events
 
 
@@ -294,7 +299,7 @@ def test_real_wrist_capture_through_controller_persists_three_demonstrated_poses
             pytest.fail(window.controller.wrist_capture.hint(window.rig.clock.now))
     window._refresh()
     assert window.controller.engine.config.wrist_calibration == pytest.approx(calibration())
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["wrist_calibration"] == pytest.approx(calibration())
     assert window.wrist_calibration_progress.value() == 100
     assert window.live_button.isEnabled() and not window.live_button.isChecked()

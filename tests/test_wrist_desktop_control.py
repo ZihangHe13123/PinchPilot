@@ -356,7 +356,7 @@ def test_logging_saves_fitted_parameters_without_capture_frames(rig):
     finish(rig)
     assert capture.frames and rig.control.wrist_calibration_result == CALIBRATION
     metrics.close()
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     rows = [json.loads(line) for line in text.splitlines()]
     fits = [row for row in rows if row["type"] == "wrist_calibration"]
     assert len(fits) == 1
@@ -399,7 +399,7 @@ def test_failed_calibration_logs_reason_and_summary_without_capture_data(rig, ha
     finish(rig)
     assert capture.frames
     metrics.close()
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     rows = [json.loads(line) for line in text.splitlines()]
     failures = [row for row in rows if row["type"] == "wrist_calibration_failed"]
     assert len(failures) == 1
@@ -441,7 +441,7 @@ def test_cancelling_quality_wait_keeps_last_issue_and_logs_only_summary(rig):
     rig.control.cancel_calibration()
     assert issue in rig.control.wrist_calibration_error
     metrics.close()
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     cancelled = [row for row in rows if row["type"] == "wrist_calibration_cancelled"]
     assert len(cancelled) == 1
     assert cancelled[0]["diagnostics"] == summary

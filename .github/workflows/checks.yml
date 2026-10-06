@@ -14,6 +14,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       QT_QPA_PLATFORM: offscreen
+      # The Windows runner's console encoding is cp1252; some checks print Chinese text.
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0

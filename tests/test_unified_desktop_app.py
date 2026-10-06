@@ -27,7 +27,7 @@ def make_window(application, tmp_path):
         if settings is not None:
             path = tmp_path / "data/desktop-settings.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(settings))
+            path.write_text(json.dumps(settings), encoding="utf-8")
         rig = Rig(tmp_path / "reports/desktop_trials")
         window = desktop.DesktopWindow(tmp_path, controller=rig.control)
         window.timer.stop()
@@ -95,7 +95,7 @@ def test_unified_fixed_profile_retains_position_choices_and_noise(make_window):
     assert config.motion_profile == "precise" and config.wrist_calibration == CALIBRATION
     assert (config.rest_noise_x, config.rest_noise_y) == (0, 0)
     assert controls.motion_profile.currentData() == "adaptive"
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["motion_profile"] == "adaptive" and saved["rest_noise_x"] == 0.001
     assert saved["wrist_calibration"] == list(CALIBRATION)
     choose(window, "position")
@@ -138,7 +138,7 @@ def test_legacy_wrist_migrates_once_and_keeps_other_settings(make_window, old_ca
     )
     assert window.tripod_controls.rest_noise_x == 0.001
     assert "已切换兼容定位，无需方向校准，请手动启用鼠标" in window.notice.text()
-    saved = json.loads(window.settings_path.read_text())
+    saved = json.loads(window.settings_path.read_text(encoding="utf-8"))
     assert saved["unified_mode_seen"] is True
     assert saved["pointer_basis"] == "unified" and saved["motion_profile"] == "adaptive"
     assert not window.controller.active and not window.rig.created
@@ -162,7 +162,7 @@ def test_existing_position_configuration_is_not_forced_to_unified(make_window, p
     assert window.controller.engine.config.motion_profile == profile
     assert window.tripod_controls.motion_profile.isEnabled()
     assert "已切换兼容定位" not in window.notice.text()
-    assert json.loads(window.settings_path.read_text())["unified_mode_seen"] is True
+    assert json.loads(window.settings_path.read_text(encoding="utf-8"))["unified_mode_seen"] is True
 
 
 def test_explicit_new_wrist_choice_still_requires_calibration(make_window):
