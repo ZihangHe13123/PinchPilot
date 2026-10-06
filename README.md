@@ -164,6 +164,7 @@ uv run python scripts/check_tripod.py
 uv run python scripts/check_motion_tuning.py
 ```
 
+- [课程提案与首次汇报幻灯片](docs/course/README.md)
 - [项目定位、课程要求与里程碑](docs/PROJECT_PLAN.md)
 - [桌面测试版启动、数据与开关](docs/DESKTOP_TRIAL.md)
 - [v0.11.0 兼容定位：平移与转腕](docs/COMPATIBLE_TRIAL.md)
@@ -181,4 +182,4 @@ uv run python scripts/check_motion_tuning.py
 - [少动作、小幅度的目标与指标](docs/superpowers/specs/2026-09-21-minimal-motion-design.md)
 - [参考与第三方组件](THIRD_PARTY.md)
 
-状态机与输入结构测试使用合成帧/模拟接口，不能视为真实摄像头识别率或 Windows 真机验收。CI 配置已经提供；当前仓库仅在本地，未执行远程 CI。
+状态机与输入结构测试使用合成帧/模拟接口，不能视为真实摄像头识别率或 Windows 真机验收。CI 在 GitHub Actions 上运行：每次推送都会在 macOS 与 Windows 上执行格式检查、测试、合成演示启动、三个检查脚本和打包。
