@@ -152,6 +152,16 @@ uv run pinchpilot calibrate --participant P01 --output data/profiles/P01.json
 
 原始视频不保存、不上传。关键点录制位于 `data/recordings/`；校准位于 `data/profiles/`；离散交互事件位于 `data/events/`；评测和任务记录位于 `reports/`。这些目录默认不进入 Git 和源码交付包。
 
+## 协作方式
+
+`main` 分支受保护，不能直接推送，也不能强制推送或删除。改动按下面的步骤合并：
+
+1. 从最新的 `main` 新建分支，在分支上提交并推送。
+2. 在 GitHub 上发起 Pull Request。
+3. 自动检查在 macOS 和 Windows 上都通过后才能合并，不要求他人审批。
+
+合并前可以先在本地运行下一节的检查命令。
+
 ## 工程检查与阅读入口
 
 ```sh
