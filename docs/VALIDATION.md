@@ -11,6 +11,8 @@
 - 修复（提交 ad13397）：测试中的 `read_text`、`write_text`、`open` 全部加 `encoding="utf-8"`；`check_single_finger.py` 与 `check_tripod.py` 同样处理；CI 设置 `PYTHONIOENCODING=utf-8`，因为 `check_motion_tuning.py` 会向控制台输出中文。
 - 修复后：两个平台的 16 个步骤全部通过。测试结果为 macos-15 **690 项通过、5 项跳过**，windows-2022 **689 项通过、6 项跳过**；合成演示启动、三个检查脚本和打包也都通过。
 - 这是 Windows 上首次完成的自动化运行，使用合成帧和离屏界面，不涉及真实相机和系统鼠标输入。Windows 真机的相机、系统输入和便携包仍需组员实测。
+- 已知的偶发失败：`tests/test_desktop_app.py::test_minimized_window_continues_heartbeat_but_skips_preview` 在 windows-2022 上失败过 1 次，同一提交（6502be0）的另一次运行通过。该测试用真实时钟运行 650 毫秒的界面事件循环；界面线程卡顿达到 0.40 秒的心跳超时后，鼠标会话按设计停止，断言随之失败。本地在窗口最小化后人为加入 0.50 秒卡顿可以复现同样的失败，加入 0.30 秒则通过。产品行为符合设计，测试尚未修改；遇到时重跑失败的任务。
+- 同日起 `main` 受保护：只能通过 Pull Request 合并，不能强制推送或删除。自动检查目前不是合并的强制条件，原因就是上面这项偶发失败。
 
 ## v0.13.0 三指接触 ML 离线工具
 

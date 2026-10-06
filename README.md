@@ -158,9 +158,9 @@ uv run pinchpilot calibrate --participant P01 --output data/profiles/P01.json
 
 1. 从最新的 `main` 新建分支，在分支上提交并推送。
 2. 在 GitHub 上发起 Pull Request。
-3. 自动检查在 macOS 和 Windows 上都通过后才能合并，不要求他人审批。
+3. 合并前确认自动检查在 macOS 和 Windows 上都通过。不要求他人审批。
 
-合并前可以先在本地运行下一节的检查命令。
+提交前可以先在本地运行下一节的检查命令。自动检查偶尔会因运行器卡顿而失败，已知情况见 [验证记录](docs/VALIDATION.md)，重跑失败的任务即可。
 
 ## 工程检查与阅读入口
 
