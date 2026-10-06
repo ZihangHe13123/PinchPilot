@@ -7,13 +7,12 @@ from unittest.mock import Mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QEvent, QEventLoop, QPoint, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionSlider
-from test_desktop_control import FakeMouse, Rig
+from test_desktop_control import Rig
 
 from pinchpilot import desktop
-from pinchpilot.desktop_control import DesktopController
 from pinchpilot.domain import InputEvent
 from pinchpilot.framing import FramingStatus
 from pinchpilot.tripod_controls import TripodControls
@@ -463,17 +462,24 @@ def test_close_cleans_up_and_failed_cleanup_keeps_window_available(window):
 
 
 def test_minimized_window_continues_heartbeat_but_skips_preview(application, tmp_path):
-    output = FakeMouse()
-    control = DesktopController(tmp_path / "reports", output_factory=lambda: output)
+    # The window's own timer still drives every callback, but the unchanged frame and
+    # heartbeat deadlines run on simulated time, so a stalled runner cannot expire them.
+    rig = Rig(tmp_path / "reports")
+    control, clock = rig.control, rig.clock
     win = desktop.DesktopWindow(tmp_path, controller=control)
     control.set_source("camera")
 
     class Worker:
-        failure = None
+        # Like CameraWorker: a single latest-result slot, empty until the next capture.
+        failure = latest = None
+
+        def capture(self):
+            clock.now += 1 / 30
+            self.latest = Packet(None, synthetic_tripod(clock.now), 8.0, 30.0, clock.now)
 
         def pop(self):
-            now = time.monotonic()
-            return Packet(None, synthetic_tripod(now), 8.0, 30.0, now)
+            packet, self.latest = self.latest, None
+            return packet
 
         def stop(self):
             pass
@@ -484,18 +490,35 @@ def test_minimized_window_continues_heartbeat_but_skips_preview(application, tmp
         def join(self, timeout=None):
             pass
 
-    win.worker = Worker()
-    control.consume(win.worker.pop())
+    win.worker = worker = Worker()
+    fired = QSignalSpy(win.timer.timeout)
+    interval = win.timer.interval()
+
+    def next_frame():
+        worker.capture()
+        assert fired.wait(10_000), "the window timer stopped firing"
+        control.session.poll()  # The watchdog thread's check, at a known simulated time.
+
+    worker.capture()
+    control.consume(worker.pop())
     control.enable()
     win.showMinimized()
     win.camera_view.set_frame = Mock()
-    loop = QEventLoop()
-    QTimer.singleShot(650, loop.quit)
     try:
-        loop.exec()
-        assert control.active
+        assert win.isMinimized() and win.preview.isChecked()
+        started = clock.now
+        while clock.now - started < control.session.HEARTBEAT_TIMEOUT + control.FRAME_TIMEOUT:
+            next_frame()
+        assert control.active, (control.session.snapshot()["reason"], control.notice)
+        assert control.last_tick == clock.now
+        # Simulated time cannot notice a slower timer, so its rate is checked directly.
+        assert win.timer.isActive() and win.timer.interval() == interval
         win.camera_view.set_frame.assert_not_called()
-        assert output.events
+        assert rig.output.events
+        # Control: the same frame path draws again once the window is restored.
+        win.showNormal()
+        next_frame()
+        win.camera_view.set_frame.assert_called_once()
     finally:
         win.close()
 
