@@ -1,10 +1,14 @@
 import json
 import math
 import threading
+import time
 from dataclasses import replace
+from itertools import count
+from types import SimpleNamespace
 
 import pytest
 
+from pinchpilot import trial_metrics
 from pinchpilot.desktop_control import DesktopController
 from pinchpilot.domain import HandFrame, InputEvent
 from pinchpilot.mouse_session import MouseSession
@@ -292,7 +296,12 @@ def test_watchdog_thread_releases_even_without_a_qt_event_loop():
     assert not session.thread.is_alive()
 
 
-def test_logging_toggle_and_telemetry_are_local_and_source_labelled(rig):
+def test_logging_toggle_and_telemetry_are_local_and_source_labelled(rig, monkeypatch):
+    # A log is named from the wall clock, which moves in 15.6 ms steps on Windows before
+    # Python 3.13. A second session inside one step would reuse the name and be refused;
+    # a person cannot switch that fast, this test can. Give every name its own reading.
+    stamps = count(time.time_ns())
+    monkeypatch.setattr(trial_metrics, "time", SimpleNamespace(time_ns=lambda: next(stamps)))
     metrics = rig.control.metrics
     metrics.set_logging(True, {"span": 0.3}, "none")
     first_path = metrics.path
@@ -315,6 +324,7 @@ def test_logging_toggle_and_telemetry_are_local_and_source_labelled(rig):
     assert metrics.snapshot(rig.clock())["processed_fps"] == 0
     metrics.set_logging(True, {}, "camera")
     assert metrics.path != first_path
+    assert metrics.file is not None and not metrics.error
 
 
 def test_dispatch_also_blocks_synthetic_source_if_ui_teardown_were_bypassed(rig):
