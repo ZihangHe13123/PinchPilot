@@ -160,6 +160,8 @@ uv run pinchpilot calibrate --participant P01 --output data/profiles/P01.json
 2. 在 GitHub 上发起 Pull Request。
 3. 等自动检查在 macOS 和 Windows 上都通过后合并；这两项检查是合并的必需条件。不要求他人审批。
 
+自动检查在发起 Pull Request 后运行，之后每次向该分支推送都会重新运行。只推送分支、没有发起 Pull Request 时不会运行；需要时可以在 GitHub 的 Actions 页面手动运行。
+
 提交前可以先在本地运行下一节的检查命令。此前在 Windows 上偶发失败的两项测试已经修复，经过见 [验证记录](docs/VALIDATION.md)；自动检查失败时请先看日志确认原因。
 
 ## 工程检查与阅读入口
@@ -192,4 +194,4 @@ uv run python scripts/check_motion_tuning.py
 - [少动作、小幅度的目标与指标](docs/superpowers/specs/2026-09-21-minimal-motion-design.md)
 - [参考与第三方组件](THIRD_PARTY.md)
 
-状态机与输入结构测试使用合成帧/模拟接口，不能视为真实摄像头识别率或 Windows 真机验收。CI 在 GitHub Actions 上运行：每次推送都会在 macOS 与 Windows 上执行格式检查、测试、合成演示启动、三个检查脚本和打包。
+状态机与输入结构测试使用合成帧/模拟接口，不能视为真实摄像头识别率或 Windows 真机验收。CI 在 GitHub Actions 上运行：每个 Pull Request 和 `main` 的每次更新都会在 macOS 与 Windows 上执行格式检查、测试、合成演示启动、三个检查脚本和打包。
