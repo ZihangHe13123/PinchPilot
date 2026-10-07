@@ -2,14 +2,32 @@ import hashlib
 import io
 import json
 import sys
+from itertools import count
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from test_desktop_control import Clock, CoarseClock, Rig
 
 from pinchpilot import vision
 from pinchpilot.domain import HandFrame
+from pinchpilot.tripod_demo import synthetic_tripod
+
+
+def fake_cv2(capture):
+    return SimpleNamespace(
+        CAP_DSHOW=1,
+        CAP_MSMF=2,
+        CAP_ANY=0,
+        CAP_PROP_FRAME_WIDTH=3,
+        CAP_PROP_FRAME_HEIGHT=4,
+        CAP_PROP_FPS=5,
+        COLOR_BGR2RGB=6,
+        VideoCapture=capture,
+        flip=lambda value, _: value,
+        cvtColor=lambda value, _: value,
+    )
 
 
 def test_model_download_verifies_bytes_and_cache(tmp_path, monkeypatch):
@@ -117,18 +135,6 @@ def test_windows_capture_fallback_and_cleanup_without_hardware(tmp_path, monkeyp
         read=Mock(side_effect=[(True, "rgb")] * frame_count + [(False, None)]),
     )
     capture = Mock(side_effect=[failed, camera])
-    cv = SimpleNamespace(
-        CAP_DSHOW=1,
-        CAP_MSMF=2,
-        CAP_ANY=0,
-        CAP_PROP_FRAME_WIDTH=3,
-        CAP_PROP_FRAME_HEIGHT=4,
-        CAP_PROP_FPS=5,
-        COLOR_BGR2RGB=6,
-        VideoCapture=capture,
-        flip=lambda value, _: value,
-        cvtColor=lambda value, _: value,
-    )
     detector = SimpleNamespace(
         process=lambda rgb, t: HandFrame(t),
         close=Mock(),
@@ -137,7 +143,9 @@ def test_windows_capture_fallback_and_cleanup_without_hardware(tmp_path, monkeyp
     create_tracker = Mock(return_value=detector)
     monkeypatch.setattr(vision, "Tracker", create_tracker)
     monkeypatch.setattr(vision, "sys", SimpleNamespace(platform="win32"))
-    monkeypatch.setitem(sys.modules, "cv2", cv)
+    # Mocked reads take no time; the real Windows clock would not move between them.
+    monkeypatch.setattr(vision, "time", SimpleNamespace(monotonic=Mock(side_effect=count())))
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2(capture))
     worker = vision.CameraWorker(tmp_path, preferred_hand="Right")
     worker.run()
     assert [call.args for call in capture.call_args_list] == [(0, 1), (0, 2)]
@@ -153,3 +161,58 @@ def test_windows_capture_fallback_and_cleanup_without_hardware(tmp_path, monkeyp
     failed.release.assert_called_once()
     camera.release.assert_called_once()
     detector.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "clock,published", [(Clock, [0.50, 0.51, 0.52, 0.53]), (CoarseClock, [0.50, 0.51, 0.53])]
+)
+def test_buffered_frame_on_a_coarse_clock_never_reaches_the_controller_as_a_replay(
+    tmp_path, monkeypatch, clock, published
+):
+    # After a slow iteration the next frame is already buffered, so two reads can fall
+    # inside one 15.6 ms step of time.monotonic() on Windows before Python 3.13. The
+    # worker drops the second frame rather than publishing it on the previous stamp.
+    rig = Rig(tmp_path / "reports", clock())
+    control = rig.control
+    control.set_source("camera")
+    # Seconds each read waits and the hand position in its frame; the third frame was
+    # buffered while the second one was in inference.
+    reads = [(0.020, 0.50), (0.020, 0.51), (0.0001, 0.52), (0.030, 0.53)]
+    seen = []
+
+    def gui_tick():  # What DesktopWindow._tick does, run here between two captures.
+        packet = worker.pop()
+        if packet is not None:
+            seen.append((packet, control.consume(packet)))
+        control.tick()
+        if control.session is None and control.fresh():
+            control.enable()
+
+    def read():
+        gui_tick()
+        if not reads:
+            return False, None
+        waited, image = reads.pop(0)
+        rig.clock.now += waited
+        return True, image
+
+    def process(image, stamp):
+        rig.clock.now += 0.008  # Inference.
+        return synthetic_tripod(stamp, x=image)
+
+    tracker = SimpleNamespace(process=process, close=Mock(), selector=SimpleNamespace(status=""))
+    camera = SimpleNamespace(isOpened=lambda: True, release=Mock(), set=Mock(), read=read)
+    monkeypatch.setattr(vision, "Tracker", lambda *_, **__: tracker)
+    monkeypatch.setattr(vision, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(vision, "time", SimpleNamespace(monotonic=rig.clock))
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2(lambda *_: camera))
+    worker = vision.CameraWorker(tmp_path)
+    try:
+        worker.run()
+        assert "未返回画面" in worker.failure
+        assert [packet.rgb for packet, _ in seen] == published
+        stamps = [packet.captured_at for packet, _ in seen]
+        assert stamps == sorted(set(stamps)) and all(accepted for _, accepted in seen)
+        assert control.active and control.metrics.dropped == 0
+    finally:
+        control.close()
