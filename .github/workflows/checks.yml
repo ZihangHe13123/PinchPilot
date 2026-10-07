@@ -1,6 +1,8 @@
 name: Prototype checks
 on:
+  # A pull request is checked once, by its own event; a push runs the checks only on main.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
