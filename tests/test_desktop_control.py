@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 from dataclasses import replace
 
@@ -10,6 +11,8 @@ from pinchpilot.mouse_session import MouseSession
 from pinchpilot.tripod_demo import synthetic_tripod
 from pinchpilot.vision import Packet
 
+TICK = 0.015625  # One GetTickCount64() step: time.monotonic() on Windows before Python 3.13.
+
 
 class Clock:
     def __init__(self):
@@ -17,6 +20,12 @@ class Clock:
 
     def __call__(self):
         return self.now
+
+
+class CoarseClock(Clock):
+    # Time still passes in `now`; a reading only moves once per TICK.
+    def __call__(self):
+        return math.floor(self.now / TICK) * TICK
 
 
 class FakeMouse:
@@ -56,8 +65,8 @@ class FakeMouse:
 
 
 class Rig:
-    def __init__(self, directory):
-        self.clock = Clock()
+    def __init__(self, directory, clock=None):
+        self.clock = clock or Clock()
         self.output = FakeMouse()
         self.created = 0
         self.control = DesktopController(directory, self.clock, self.factory, background=False)
@@ -66,14 +75,11 @@ class Rig:
         self.created += 1
         return self.output
 
-    def frames(self, count=1, missing=False, **options):
+    def frames(self, count=1, missing=False, step=1 / 30, **options):
         for _ in range(count):
-            self.clock.now += 1 / 30
-            frame = (
-                HandFrame(self.clock.now)
-                if missing
-                else synthetic_tripod(self.clock.now, **options)
-            )
+            self.clock.now += step
+            stamp = self.clock()  # One clock reading per frame, as CameraWorker stamps it.
+            frame = HandFrame(stamp) if missing else synthetic_tripod(stamp, **options)
             self.control.consume(Packet(None, frame, 8.0, 30.0, frame.timestamp))
             self.control.tick()
         return self.control.result
@@ -194,6 +200,31 @@ def test_bad_or_replayed_frame_stops_native_output(rig, stamp):
     frame = synthetic_tripod(stamp)
     assert not rig.control.consume(Packet(None, frame, 8, 30, stamp))
     assert not rig.control.active and not rig.output.down
+
+
+@pytest.mark.parametrize(
+    "clock,apart,accepted",
+    [(CoarseClock, 0.008, False), (CoarseClock, 0.016, True), (Clock, 0.008, True)],
+)
+def test_new_frame_inside_one_coarse_clock_tick_stops_control_like_a_replay(
+    tmp_path, clock, apart, accepted
+):
+    # An unchanged stamp is all the controller sees of a replay, so a different frame
+    # read within the same tick of a coarse clock stops control exactly like one.
+    rig = Rig(tmp_path, clock())
+    try:
+        rig.live()
+        rig.frames(18, contact=0.1)
+        assert rig.control.active and rig.output.down
+        # One frame 1 ms into a clock tick, then a different one `apart` seconds later.
+        rig.frames(contact=0.1, step=TICK - rig.clock.now % TICK + 0.001)
+        rig.frames(contact=0.1, x=0.52, step=apart)
+        assert rig.control.metrics.dropped == (0 if accepted else 1)
+        assert rig.control.active is accepted and rig.output.down is accepted
+        if not accepted:
+            assert rig.control.session.snapshot()["reason"] == "invalid_or_stale_frame"
+    finally:
+        rig.control.close()
 
 
 def test_heartbeat_renewal_cannot_revive_a_stalled_session(rig):

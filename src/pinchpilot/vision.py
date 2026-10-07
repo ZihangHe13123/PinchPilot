@@ -154,6 +154,10 @@ class CameraWorker(threading.Thread):
                 captured = time.monotonic()
                 if not ok:
                     raise RuntimeError("相机未返回画面，已停止控制")
+                if captured <= last:
+                    # Before Python 3.13 the Windows clock moves in 15.6 ms steps. A frame
+                    # on an unchanged stamp reads as a replay downstream, so drop it here.
+                    continue
                 # Mirror exactly once, before both feature extraction and preview.
                 rgb = cv2.cvtColor(cv2.flip(bgr, 1), cv2.COLOR_BGR2RGB)
                 started = time.monotonic()

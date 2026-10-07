@@ -63,13 +63,24 @@ def test_initial_two_hands_require_a_choice_and_explicit_side_can_acquire():
 
 @pytest.mark.parametrize(
     "problem",
-    ["low_score", "flipped_label", "same_label", "overlap", "gap", "jump", "missing", "nan"],
+    [
+        "low_score",
+        "flipped_label",
+        "same_label",
+        "overlap",
+        "gap",
+        "jump",
+        "missing",
+        "nan",
+        "repeated_stamp",
+    ],
 )
 def test_uncertain_tracking_outputs_no_old_landmarks_and_reacquires(problem):
     selector = ControlHandSelector("Right")
     for i in range(3):
         choose(selector, i / 30, hand(i / 30))
-    t = 1.0 if problem == "gap" else 0.10
+    # A coarse clock can hand a new frame the stamp of the previous one.
+    t = {"gap": 1.0, "repeated_stamp": 2 / 30}.get(problem, 0.10)
     current = hand(t)
     candidates = [current]
     if problem == "low_score":
