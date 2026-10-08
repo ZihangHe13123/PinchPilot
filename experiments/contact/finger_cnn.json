@@ -1,0 +1,11 @@
+{
+  "schema": "pinchpilot-contact-settings-v1",
+  "model": "finger_cnn",
+  "seed": 42,
+  "note": "shared 三根手指是否共用参数，context 是否加上其他手指的信息；其余各项和时序 CNN 相同。",
+  "candidates": [
+    {"name": "基础", "channels": 24, "epochs": 15, "learning_rate": 0.001, "shared": true, "context": true},
+    {"name": "对照：不共用参数", "channels": 24, "epochs": 15, "learning_rate": 0.001, "shared": false, "context": true},
+    {"name": "对照：不加其他手指", "channels": 24, "epochs": 15, "learning_rate": 0.001, "shared": true, "context": false}
+  ]
+}

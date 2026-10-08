@@ -1,0 +1,11 @@
+{
+  "schema": "pinchpilot-contact-settings-v1",
+  "model": "forest",
+  "seed": 42,
+  "note": "trees 树的数量，depth 树的深度，min_leaf 叶子最少样本数，frames 用最近几帧，stride 训练时每几个窗口取一个。",
+  "candidates": [
+    {"name": "基础", "trees": 160, "depth": 12, "min_leaf": 2, "frames": 8, "stride": 3},
+    {"name": "浅一些", "trees": 160, "depth": 8, "min_leaf": 2, "frames": 8, "stride": 3},
+    {"name": "只用 4 帧", "trees": 160, "depth": 12, "min_leaf": 2, "frames": 4, "stride": 3}
+  ]
+}
