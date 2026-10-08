@@ -67,6 +67,10 @@ def _validate_frame(frame):
         points = np.asarray(frame.landmarks, dtype=float)
         if points.shape != (21, 3) or not np.isfinite(points).all():
             raise ValueError("关键点必须是有限的21×3坐标")
+    if frame.world_landmarks:
+        world = np.asarray(frame.world_landmarks, dtype=float)
+        if not frame.landmarks or world.shape != (21, 3) or not np.isfinite(world).all():
+            raise ValueError("世界坐标关键点必须随关键点一起出现，且为有限的21×3坐标")
 
 
 def contact_features(frame, dt=0.0):
@@ -259,6 +263,9 @@ def read_contact_recording(path):
                 if row.pop("type") != "frame":
                     raise ValueError("记录类型无效")
                 row["landmarks"] = tuple(tuple(point) for point in row["landmarks"])
+                row["world_landmarks"] = tuple(
+                    tuple(point) for point in row.get("world_landmarks", ())
+                )
                 frame = HandFrame(**row)
                 _validate_frame(frame)
                 if frames and frame.timestamp <= frames[-1].timestamp:
@@ -289,6 +296,45 @@ def annotation_template(recording, output):
     }
     # Exclusive creation avoids save_json's predictable .tmp sibling colliding
     # with a caller's input recording or an unrelated existing file.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(result, stream, ensure_ascii=False, indent=2, allow_nan=False)
+    return result
+
+
+def draft_annotation(recording, output, intervals, protocol):
+    """Write unreviewed labels taken from a guided session's prompts and Space key.
+
+    The file says so (`reviewed` false, `label_source` "protocol_draft"), and training
+    refuses it until a person has reviewed it.
+    """
+    meta, frames = read_contact_recording(recording)
+    path = Path(output)
+    if path.exists():
+        raise ValueError("标注文件已存在，不能覆盖已做的标注")
+    last_end = 0
+    for interval in intervals:
+        start, end = interval.get("start"), interval.get("end")
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or not last_end <= start < end <= len(frames)
+            or any(interval.get(channel) not in (0, 1, None) for channel in CHANNELS)
+        ):
+            raise ValueError("草稿标注区间无效")
+        last_end = end
+    result = {
+        "schema": ANNOTATION_SCHEMA,
+        "recording_sha256": _sha(recording),
+        "recording_source": meta["source"],
+        "reviewed": False,
+        "label_source": "protocol_draft",
+        "protocol": protocol,
+        "annotator": "",
+        "channels": list(CHANNELS),
+        "interval_units": "zero_based_frame_index_half_open",
+        "intervals": list(intervals),
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2, allow_nan=False)
