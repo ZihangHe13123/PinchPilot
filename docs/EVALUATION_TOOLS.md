@@ -4,7 +4,7 @@
 
 ## 启动
 
-先退出旧窗口，Mac 双击项目根目录 `launch_desktop_mac.command`；Windows 用 `launch_desktop_windows.cmd`。当前源码标题应为 **0.13.0**，本页的诊断与测试功能从0.12开始提供。已留档的0.11 ZIP保持原样，未包含这些工具。
+先退出旧窗口，Mac 双击项目根目录 `launch_desktop_mac.command`；Windows 用 `launch_desktop_windows.cmd`。当前源码标题应为 **0.14.0**，本页的诊断与测试功能从0.12开始提供。已留档的0.11 ZIP保持原样，未包含这些工具。
 
 启动时相机和系统输入均关闭。新按钮位于右侧可滚动的设置区，「打开测试记录」下面。
 
