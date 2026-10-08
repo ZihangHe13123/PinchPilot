@@ -29,6 +29,7 @@ from .contact_data import (
     draft_annotation,
     read_contact_recording,
 )
+from .contact_demo_view import GestureDemo, caption
 from .domain import HandFrame
 
 STOP_LABELS = {
@@ -112,7 +113,7 @@ class ContactCaptureWindow(QWidget):
         self.lock_until = 0.0
         self.last_feed = None
         self.setWindowTitle("PinchPilot · ML 关键点采集")
-        self.resize(*((640, 800) if guided else (560, 480)))
+        self.resize(*((920, 820) if guided else (560, 480)))
         self.setMinimumSize(440, 420)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -147,8 +148,9 @@ class ContactCaptureWindow(QWidget):
         self.next_label.setWordWrap(True)
         self.result_label = QLabel()
         self.result_label.setWordWrap(True)
+        guide.addWidget(self.notice_label)
+        columns, words, picture = QHBoxLayout(), QVBoxLayout(), QVBoxLayout()
         for item in (
-            self.notice_label,
             self.prompt_label,
             self.note_label,
             self.step_bar,
@@ -157,7 +159,23 @@ class ContactCaptureWindow(QWidget):
             self.next_label,
             self.result_label,
         ):
-            guide.addWidget(item)
+            words.addWidget(item)
+        words.addStretch()
+        # Beside the words: a hand that acts the clip out at the pace it should be done.
+        self.demo = GestureDemo()
+        self.demo.setMinimumSize(300, 310)
+        self.demo_caption = QLabel()
+        self.demo_caption.setWordWrap(True)
+        self.demo_caption.setStyleSheet("color:#9fb4c4;")
+        picture.addWidget(self.demo, 1)
+        picture.addWidget(self.demo_caption)
+        columns.addLayout(words, 3)
+        columns.addLayout(picture, 2)
+        guide.addLayout(columns)
+        self.demo_since = 0.0
+        self.demo_timer = QTimer(self)
+        self.demo_timer.setInterval(33)
+        self.demo_timer.timeout.connect(lambda: self._refresh_demo(self.clock()))
         clip_buttons = QHBoxLayout()
         self.begin_button = QPushButton("开始这一段（空格）")
         self.begin_button.setObjectName("primary")
@@ -284,7 +302,8 @@ class ContactCaptureWindow(QWidget):
         self.setFocus()
         if self.guided_box.isChecked():
             self.clips = contact_protocol.clips(self.protocol)
-            self.protocol_start = self.clock()
+            self.protocol_start = self.demo_since = self.clock()
+            self.demo_timer.start()
             # Space must reach this window whichever control has the focus.
             self.grabKeyboard()
         self._refresh()
@@ -313,6 +332,10 @@ class ContactCaptureWindow(QWidget):
         self.last_capture = self.last_input_timestamp = frame.timestamp
         self.last_feed = now
         self.hand_present = bool(frame.landmarks)
+        if self.guided_active and not self.schedule and frame.landmarks:
+            # Before the first clip, with the palm to the camera: draw the example as the
+            # hand on screen looks, thumb on the same side.
+            self.demo.mirror = frame.landmarks[4][0] > frame.landmarks[17][0]
         gap = previous is not None and frame.timestamp - previous > self.MAX_AGE
         if self.recorder_active and gap and not self.guided_active:
             self._finish("input_gap")
@@ -380,6 +403,7 @@ class ContactCaptureWindow(QWidget):
         self.last_marks = holds if clip.uses_key else None
         self.last_range, self.clip_range = self.clip_range, None
         self.clip_index += 1
+        self.demo_since = self.clock()
         # Someone still tapping when the clip ends must not start the next one by accident.
         # A key that is simply held only repeats, and repeats are ignored anyway.
         self.lock_until = self.clock() + self.START_LOCK
@@ -396,6 +420,7 @@ class ContactCaptureWindow(QWidget):
         self.last_range = self.last_marks = None
         self.clip_index -= 1
         self.redone += 1
+        self.demo_since = self.clock()
         self._refresh()
 
     def _space(self, pressed):
@@ -510,6 +535,7 @@ class ContactCaptureWindow(QWidget):
         guided = started is not None
         ended = self.clock()
         if guided:
+            self.demo_timer.stop()
             self.releaseKeyboard()
             if self.key_down:
                 self.key_down = False
@@ -579,6 +605,26 @@ class ContactCaptureWindow(QWidget):
             name = _session_name()
             self.session.setText(name if name != self.identity[1] else f"{name}_2")
 
+    def _demo_step(self, now):
+        """(step, seconds into it) that the example hand should be showing."""
+        if self.clip_running:
+            elapsed = now - self.protocol_start
+            first, end = self.clip_range
+            index = next((i for i in range(first, end) if elapsed < self.schedule[i][1]), end - 1)
+            return self.schedule[index][2], elapsed - self.schedule[index][0]
+        # While the person reads, the hand acts the whole clip out, over and over.
+        clip = self.clips[self.clip_index]
+        moment = (now - self.demo_since) % (clip.seconds + 1.0)
+        for step in clip.steps:
+            if moment < step.seconds or step is clip.steps[-1]:
+                return step, min(moment, step.seconds)
+            moment -= step.seconds
+
+    def _refresh_demo(self, now):
+        if not self.guided_active or self.clip_index >= len(self.clips):
+            return
+        self.demo.show_step(*self._demo_step(now))
+
     def _refresh_guide(self, now, fresh):
         self.guide_panel.setVisible(self.guided_box.isChecked())
         session = self.guided_active
@@ -589,6 +635,8 @@ class ContactCaptureWindow(QWidget):
             self.result_label,
             self.begin_button,
             self.redo_button,
+            self.demo,
+            self.demo_caption,
         ):
             item.setVisible(session)
         if not session:
@@ -626,7 +674,10 @@ class ContactCaptureWindow(QWidget):
         self.key_label.setText(("空格：按住中" if self.key_down else "空格：未按") + f" · {hand}")
         self.key_label.setStyleSheet("color:#5fd38d; font-weight:600;" if self.key_down else "")
         self.begin_button.setEnabled(not self.clip_running and fresh)
+        self.begin_button.setText("正在录这一段…" if self.clip_running else "开始这一段（空格）")
         self.redo_button.setEnabled(not self.clip_running and self.last_range is not None)
+        self._refresh_demo(now)
+        self.demo_caption.setText(caption(self.demo.step, len(clip.steps) > 1))
         if self.clip_running:
             elapsed = now - self.protocol_start
             first, end = self.clip_range
