@@ -89,6 +89,14 @@ def parser() -> argparse.ArgumentParser:
     cv.add_argument("--allow-synthetic", action="store_true", help="只为工程验证使用合成数据")
     cv.add_argument("--final-test", action="store_true", help="给留出的人打分；定稿后统一运行一次")
     cv.add_argument("--cache", type=Path, default=Path("data/cache/contact_pool"))
+    review = sub.add_parser(
+        "ml-review", help="逐段检查按提示录制的草稿标签；别人的录制则抽查其中一部分"
+    )
+    review.add_argument("source", type=Path, help="一个录制压缩包，或放录制的文件夹")
+    review.add_argument("--annotator", help="你自己的编号，例如 P02")
+    review.add_argument("--status", action="store_true", help="只列出各段录制的检查进度")
+    review.add_argument("--smoke-seconds", type=float, help="到时自动退出，仅用于启动检查")
+    review.add_argument("--screenshot", type=Path, help="启动后保存一张窗口截图")
     shadow = sub.add_parser("ml-shadow", help="离线旁路比较模型与几何规则；只加载可信的本地模型")
     shadow.add_argument("recording", type=Path)
     shadow.add_argument("--model", type=Path, required=True)
@@ -152,6 +160,10 @@ def main(argv=None) -> int:
             from .desktop import run_desktop
 
             return run_desktop(args.workspace, args.demo, args.smoke_seconds, args.screenshot)
+        if args.command == "ml-review" and not args.status:
+            from .contact_review_window import run_review
+
+            return run_review(args.source, args.annotator, args.smoke_seconds, args.screenshot)
         if args.command == "gui":
             from .app import run_gui
 
@@ -249,6 +261,10 @@ def main(argv=None) -> int:
                     "manifest": str(create_synthetic_contact_dataset(args.output, args.seed)),
                     "source": "synthetic_engineering",
                 }
+        elif args.command == "ml-review":
+            from .contact_review import list_recordings
+
+            result = [{**row, "path": str(row["path"])} for row in list_recordings(args.source)]
         elif args.command == "ml-pool":
             from .contact_pool import load_contact_pool, summary
 
