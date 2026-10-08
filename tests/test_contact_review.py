@@ -420,6 +420,9 @@ def test_window_margins_relabel_and_send_accepted_units_back(application, folder
     slider = window.sliders["shift"]
     slider.setValue(round(LAG * 1000 / slider.property("step")))
     assert "空格标记提前 120 毫秒" in window.slider_labels["shift"].text()
+    slider.setValue(-9)
+    assert window.slider_labels["shift"].text() == "空格标记推后 90 毫秒"
+    slider.setValue(round(LAG * 1000 / slider.property("step")))
     assert np.array_equal(window.labels, before)  # Nothing changes until the slider is let go.
     window._margins_changed()
     assert window.margins == Margins(shift=LAG) and not np.array_equal(window.labels, before)

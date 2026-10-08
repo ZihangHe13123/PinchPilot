@@ -548,7 +548,11 @@ class ReviewWindow(QWidget):
 
     def _slider_text(self, name):
         slider, text = self.sliders[name], next(t for key, t, _ in SLIDERS if key == name)
-        self.slider_labels[name].setText(f"{text} {slider.value() * slider.property('step')} 毫秒")
+        amount = slider.value() * slider.property("step")
+        if name == "shift" and amount < 0:
+            # The marks can run early as well as late: a camera shows a touch after it happened.
+            text, amount = "空格标记推后", -amount
+        self.slider_labels[name].setText(f"{text} {amount} 毫秒")
 
     def _margins_changed(self):
         if self.mode != "review" or self.session is None:
