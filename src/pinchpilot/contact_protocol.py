@@ -7,6 +7,8 @@ fingers touch; they are a draft for human review, never ground truth.
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from .contact_data import CHANNELS
 
 NAME = "pinchpilot-guided-session-1"
@@ -126,41 +128,84 @@ def unmarked(schedule, events, end):
     ]
 
 
-def draft_labels(times, present, schedule, events):
-    """One (middle, index, ring) tuple of 0, 1 or None for each frame.
+def label_array(times, present, schedule, events, settle=SETTLE, lead=LEAD, edge=KEY_EDGE):
+    """Draft labels as an int array [frames, 3]: 0, 1, or -1 for no label.
 
     `times` are frame times in seconds from the start of the session and `present` says
     whether the frame has a hand. A frame gets no label without a hand, outside the session,
-    near a change of prompt, or near a press or release of the Space key. A step that asks
-    for Space marks and got none leaves that channel unlabelled: the key may not have reached
-    the window, so "never touched" would be a guess.
+    within `settle` after a prompt appears or `lead` before it ends, or within `edge` of a
+    press or release of the Space key. A step that asks for Space marks and got none leaves
+    that channel unlabelled: the key may not have reached the window, so "never touched"
+    would be a guess.
     """
-    blank = (None,) * len(CHANNELS)
-    if not schedule:
-        return [blank] * len(times)
+    times = np.asarray(times, dtype=float)
+    labels = np.full((len(times), len(CHANNELS)), -1, dtype=np.int8)
+    if not schedule or not len(times):
+        return labels
+    starts = np.array([start for start, _, _ in schedule])
+    ends = np.array([end for _, end, _ in schedule])
+    step = np.clip(np.searchsorted(starts, times, side="right") - 1, 0, len(schedule) - 1)
+    usable = (
+        np.asarray(present, dtype=bool)
+        & (times >= starts[step] + settle)
+        & (times < ends[step] - lead)
+    )
     spans = key_spans(events, schedule[-1][1])
-    silent = set(unmarked(schedule, events, schedule[-1][1]))
-    edges = [moment for span in spans for moment in span]
-    result = []
-    for moment, has_hand in zip(times, present):
-        index = position(schedule, moment)
-        if index is None or not has_hand:
-            result.append(blank)
-            continue
-        start, end, step = schedule[index]
-        if moment < start + SETTLE or moment >= end - LEAD:
-            result.append(blank)
-            continue
-        near_edge = any(abs(moment - edge) < KEY_EDGE for edge in edges)
-        held = any(down <= moment < up for down, up in spans)
-        labels = []
-        for label in step.labels:
-            if label == KEY:
-                labels.append(None if near_edge or index in silent else int(held))
-            else:
-                labels.append(label)
-        result.append(tuple(labels))
-    return result
+    held = np.zeros(len(times), dtype=bool)
+    near = np.zeros(len(times), dtype=bool)
+    if spans:
+        downs = np.array([down for down, _ in spans])
+        ups = np.array([up for _, up in spans])
+        last = np.searchsorted(downs, times, side="right") - 1
+        held = (last >= 0) & (times < ups[np.clip(last, 0, None)])
+        edges = np.sort(np.concatenate((downs, ups)))
+        after = np.clip(np.searchsorted(edges, times), 0, len(edges) - 1)
+        before = np.clip(after - 1, 0, None)
+        near = np.minimum(np.abs(times - edges[after]), np.abs(times - edges[before])) < edge
+    silent = np.zeros(len(schedule), dtype=bool)
+    silent[unmarked(schedule, events, schedule[-1][1])] = True
+    for channel in range(len(CHANNELS)):
+        wanted = [item.labels[channel] for _, _, item in schedule]
+        marked = np.array([label == KEY for label in wanted])[step]
+        fixed = np.array([-1 if label in (None, KEY) else label for label in wanted])[step]
+        from_key = np.where(near | silent[step], -1, held.astype(np.int8))
+        labels[:, channel] = np.where(usable, np.where(marked, from_key, fixed), -1)
+    return labels
+
+
+def draft_labels(times, present, schedule, events):
+    """One (middle, index, ring) tuple of 0, 1 or None for each frame; see `label_array`."""
+    rows = label_array(times, present, schedule, events).tolist()
+    return [tuple(None if value < 0 else value for value in row) for row in rows]
+
+
+def steps_from_record(record):
+    """The schedule [(start, end, step)] that a saved `.protocol.json` describes."""
+    try:
+        schedule = [
+            (
+                float(item["start"]),
+                float(item["end"]),
+                Step(
+                    str(item["name"]),
+                    str(item["text"]),
+                    float(item["end"]) - float(item["start"]),
+                    tuple(item["labels"]),
+                    round=int(item["round"]),
+                ),
+            )
+            for item in record["steps"]
+        ]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("提示记录里的步骤格式无效") from error
+    if not schedule or any(
+        len(step.labels) != len(CHANNELS)
+        or any(label not in (0, 1, None, KEY) for label in step.labels)
+        or not start < end
+        for start, end, step in schedule
+    ):
+        raise ValueError("提示记录里的步骤格式无效")
+    return schedule
 
 
 def intervals(labels):
