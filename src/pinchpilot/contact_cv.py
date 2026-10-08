@@ -588,7 +588,7 @@ def markdown(report):
         for candidate in report["candidates"]:
             cells = [_cell(candidate["validation"]["rounds"].get(number)) for number in rounds]
             lines.append(f"| {candidate['name']} | " + " | ".join(cells) + " |")
-        if report["protocols"] == [contact_protocol.NAME]:
+        if report["protocols"] and set(report["protocols"]) <= set(contact_protocol.NAMES):
             poses = contact_protocol.POSES
             legend = [f"第 {number} 轮：{poses[int(number) - 1]}" for number in rounds]
             lines += ["", "每轮的手部朝向不同。" + "；".join(legend) + "。"]

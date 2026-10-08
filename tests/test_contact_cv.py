@@ -59,7 +59,7 @@ def fake_pool(people=PEOPLE, count=96, seed=5, labels="reviewed", source="camera
             "labels": labels,
             "feature_version": "contact-v1",
             "window_config": {"frames": 8, "max_gap_seconds": 0.12, "max_window_seconds": 0.8},
-            "recordings": [{"protocol": "pinchpilot-guided-session-1"} for _ in people],
+            "recordings": [{"protocol": "pinchpilot-guided-session-2"} for _ in people],
             "step_names": ["grip_move", "index_near"],
             "fingerprint": "f" * 64,
         },

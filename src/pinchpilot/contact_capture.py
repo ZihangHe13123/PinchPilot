@@ -5,6 +5,7 @@ import math
 import re
 import time
 import zipfile
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,13 +65,16 @@ class ContactCaptureWindow(QWidget):
     hardware. A source label alone does not attest real-human provenance in tests.
     Empty HandFrames are part of the continuous recording, not filtered out.
 
-    A guided session shows the steps of ``contact_protocol`` one by one and notes when the
-    Space key is held. It saves draft labels from those, which still need human review.
+    A guided session goes through the clips of ``contact_protocol`` one at a time. The person
+    reads what a clip asks for and starts it with Space; it stops by itself. Only frames of
+    running clips are written. While a clip runs, the Space key marks touching fingers. The
+    session saves draft labels from the prompts and those marks, which still need review.
     """
 
     closed = Signal()
     MAX_AGE = 0.25
-    GUIDED_STALL = 5.0  # A guided session rides out a camera stall up to this many seconds.
+    GUIDED_STALL = 5.0  # A running clip rides out a camera stall up to this many seconds.
+    START_LOCK = 1.2  # After a clip ends, Space cannot start the next one for this long.
 
     def __init__(self, workspace, parent=None, guided=False):
         super().__init__(parent, Qt.WindowType.Window)
@@ -98,9 +102,17 @@ class ContactCaptureWindow(QWidget):
         self.unmarked = []
         self.key_down = self.hand_present = False
         self.gaps = 0
+        self.clips = []
+        self.clip_index = 0  # The clip waiting to be started, or running.
+        self.clip_range = None  # (first, end) schedule entries of the running clip.
+        self.last_range = None  # The same for the clip recorded last, until it is redone.
+        self.last_marks = None  # Space holds counted in it, or None when it asked for none.
+        self.discarded, self.redone = set(), 0
+        self.notice = ""
+        self.lock_until = 0.0
         self.last_feed = None
         self.setWindowTitle("PinchPilot · ML 关键点采集")
-        self.resize(*((640, 720) if guided else (560, 480)))
+        self.resize(*((640, 800) if guided else (560, 480)))
         self.setMinimumSize(440, 420)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -116,6 +128,9 @@ class ContactCaptureWindow(QWidget):
         self.guide_panel = QWidget()
         guide = QVBoxLayout(self.guide_panel)
         guide.setContentsMargins(0, 6, 0, 6)
+        self.notice_label = QLabel()
+        self.notice_label.setWordWrap(True)
+        self.notice_label.setStyleSheet("font-size:15px; color:#9fd6ff;")
         self.prompt_label = QLabel()
         self.prompt_label.setWordWrap(True)
         self.prompt_label.setStyleSheet("font-size:26px; font-weight:700; color:#ffffff;")
@@ -130,15 +145,28 @@ class ContactCaptureWindow(QWidget):
         self.key_label = QLabel()
         self.next_label = QLabel()
         self.next_label.setWordWrap(True)
+        self.result_label = QLabel()
+        self.result_label.setWordWrap(True)
         for item in (
+            self.notice_label,
             self.prompt_label,
             self.note_label,
             self.step_bar,
             self.guide_status,
             self.key_label,
             self.next_label,
+            self.result_label,
         ):
             guide.addWidget(item)
+        clip_buttons = QHBoxLayout()
+        self.begin_button = QPushButton("开始这一段（空格）")
+        self.begin_button.setObjectName("primary")
+        self.redo_button = QPushButton("重录上一段（退格）")
+        for button in (self.begin_button, self.redo_button):
+            # Keys are handled by the window, so that Space never presses a button.
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            clip_buttons.addWidget(button)
+        guide.addLayout(clip_buttons)
         layout.addWidget(self.guide_panel)
         fields = QFormLayout()
         self.participant = QLineEdit("P01")
@@ -151,8 +179,11 @@ class ContactCaptureWindow(QWidget):
         layout.addLayout(fields)
         self.consent = QCheckBox("同意保存 21 点坐标，不记录图像；之后需人工标注")
         layout.addWidget(self.consent)
-        minutes = round(contact_protocol.timeline(self.protocol)[-1][1] / 60)
-        self.guided_box = QCheckBox(f"按屏幕提示录制，约 {minutes} 分钟；用空格标记手指接触")
+        planned = contact_protocol.clips(self.protocol)
+        minutes = round(sum(clip.seconds for clip in planned) / 60)
+        self.guided_box = QCheckBox(
+            f"按屏幕提示分段录制：共 {len(planned)} 段、约 {minutes} 分钟，每段读完提示再开始"
+        )
         self.guided_box.setChecked(guided)
         layout.addWidget(self.guided_box)
         buttons = QHBoxLayout()
@@ -181,6 +212,8 @@ class ContactCaptureWindow(QWidget):
         layout.addStretch()
         self.start_button.clicked.connect(self.start_recording)
         self.stop_button.clicked.connect(lambda: self.stop_recording())
+        self.begin_button.clicked.connect(self.start_clip)
+        self.redo_button.clicked.connect(self.redo_clip)
         self.consent.toggled.connect(self._consent_changed)
         self.guided_box.toggled.connect(self._refresh)
         self.participant.textChanged.connect(self._refresh)
@@ -199,8 +232,9 @@ class ContactCaptureWindow(QWidget):
     def guided_active(self):
         return self.recorder is not None and self.protocol_start is not None
 
-    def _protocol_done(self, now):
-        return self.guided_active and now - self.protocol_start >= self.schedule[-1][1]
+    @property
+    def clip_running(self):
+        return self.guided_active and self.clip_range is not None
 
     def _fresh(self, now):
         return (
@@ -239,13 +273,17 @@ class ContactCaptureWindow(QWidget):
         self.identity = (participant, session)
         self.count = self.missing_count = self.gaps = 0
         self.key_events, self.unmarked, self.key_down = [], [], False
+        self.schedule, self.clip_index, self.clip_range = [], 0, None
+        self.last_range = self.last_marks = None
+        self.discarded, self.redone, self.notice = set(), 0, ""
+        self.lock_until = 0.0
         self.stop_reason = self.error = ""
         self.started_utc = datetime.now(timezone.utc).isoformat()
         # Keep the focus off the checkboxes and buttons: a stray Space must not toggle consent
         # or press a button, during the recording or after it ends.
         self.setFocus()
         if self.guided_box.isChecked():
-            self.schedule = contact_protocol.timeline(self.protocol)
+            self.clips = contact_protocol.clips(self.protocol)
             self.protocol_start = self.clock()
             # Space must reach this window whichever control has the focus.
             self.grabKeyboard()
@@ -278,6 +316,8 @@ class ContactCaptureWindow(QWidget):
         gap = previous is not None and frame.timestamp - previous > self.MAX_AGE
         if self.recorder_active and gap and not self.guided_active:
             self._finish("input_gap")
+        elif self.guided_active and not self.clip_running:
+            pass  # Between clips nothing is written; the person is reading the next prompt.
         elif self.recorder_active:
             self.gaps += gap
             try:
@@ -308,23 +348,82 @@ class ContactCaptureWindow(QWidget):
         self._finish(reason)
         self._refresh()
 
-    def _mark(self, pressed):
-        if self.guided_active and pressed != self.key_down:
-            self.key_down = pressed
-            self.key_events.append((self.clock(), pressed))
-            self._refresh()
+    def start_clip(self):
+        """Begin recording the clip that is waiting. Its steps are scheduled from now."""
+        now = self.clock()
+        if not self.guided_active or self.clip_running or self.clip_index >= len(self.clips):
+            return
+        if not self._fresh(now):
+            self.result_label.setText("相机画面还没准备好，稍等一下再开始。")
+            return
+        clip = self.clips[self.clip_index]
+        self.notice = clip.notice or self.notice
+        moment, first = now - self.protocol_start, len(self.schedule)
+        for step in clip.steps:
+            self.schedule.append((moment, moment + step.seconds, step))
+            moment += step.seconds
+        self.clip_range = (first, len(self.schedule))
+        self._refresh()
+
+    def _end_clip(self):
+        first, end = self.clip_range
+        finished = self.schedule[end - 1][1]
+        if self.key_down:
+            self.key_down = False
+            self.key_events.append((self.protocol_start + finished, False))
+        begun = self.schedule[first][0]
+        clip = self.clips[self.clip_index]
+        holds = sum(
+            pressed and begun <= moment - self.protocol_start < finished
+            for moment, pressed in self.key_events
+        )
+        self.last_marks = holds if clip.uses_key else None
+        self.last_range, self.clip_range = self.clip_range, None
+        self.clip_index += 1
+        # Someone still tapping when the clip ends must not start the next one by accident.
+        # A key that is simply held only repeats, and repeats are ignored anyway.
+        self.lock_until = self.clock() + self.START_LOCK
+
+    def redo_clip(self):
+        """Throw away the clip recorded last and record it again."""
+        if not self.guided_active or self.clip_running or self.last_range is None:
+            return
+        for index in range(*self.last_range):
+            start, end, step = self.schedule[index]
+            # Its frames stay in the file without labels; what it asked for is kept by name.
+            self.schedule[index] = (start, end, replace(step, labels=(None,) * len(step.labels)))
+            self.discarded.add(index)
+        self.last_range = self.last_marks = None
+        self.clip_index -= 1
+        self.redone += 1
+        self._refresh()
+
+    def _space(self, pressed):
+        if self.clip_running:
+            # The press that started the clip was never recorded, so its release is not either.
+            if pressed != self.key_down:
+                self.key_down = pressed
+                self.key_events.append((self.clock(), pressed))
+        elif pressed and self.clock() >= self.lock_until:
+            self.start_clip()
+        self._refresh()
 
     def keyPressEvent(self, event):
+        if self.guided_active and not event.isAutoRepeat():
+            if event.key() == Qt.Key.Key_Space:
+                return self._space(True)
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                return self.start_clip()
+            if event.key() == Qt.Key.Key_Backspace:
+                return self.redo_clip()
         if self.guided_active and event.key() == Qt.Key.Key_Space:
-            if not event.isAutoRepeat():
-                self._mark(True)
             return
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
         if self.guided_active and event.key() == Qt.Key.Key_Space:
             if not event.isAutoRepeat():
-                self._mark(False)
+                self._space(False)
             return
         super().keyReleaseEvent(event)
 
@@ -362,6 +461,11 @@ class ContactCaptureWindow(QWidget):
                 "lead": contact_protocol.LEAD,
                 "key_edge": contact_protocol.KEY_EDGE,
             },
+            "clips_planned": len(self.clips),
+            "clips_recorded": self.clip_index,
+            "clips_redone": self.redone,
+            # Steps are listed as they were recorded, with the reading pauses between clips.
+            # A clip that was redone stays in the list, marked and without labels.
             "steps": [
                 {
                     "start": start,
@@ -370,8 +474,9 @@ class ContactCaptureWindow(QWidget):
                     "name": step.name,
                     "text": step.text,
                     "labels": list(step.labels),
+                    "discarded": index in self.discarded,
                 }
-                for start, end, step in self.schedule
+                for index, (start, end, step) in enumerate(self.schedule)
             ],
             "space_key": [[moment - started, pressed] for moment, pressed in self.key_events],
             # Steps that ask for Space marks and got none; their marked channel has no label.
@@ -409,6 +514,7 @@ class ContactCaptureWindow(QWidget):
             if self.key_down:
                 self.key_down = False
                 self.key_events.append((ended, False))
+            self.clip_range = None
         self.stop_reason = reason
         self.count = recorder.count
         errors = [self.error] if self.error else []
@@ -473,11 +579,21 @@ class ContactCaptureWindow(QWidget):
             name = _session_name()
             self.session.setText(name if name != self.identity[1] else f"{name}_2")
 
-    def _refresh_guide(self, now):
+    def _refresh_guide(self, now, fresh):
         self.guide_panel.setVisible(self.guided_box.isChecked())
-        for item in (self.step_bar, self.guide_status, self.key_label, self.next_label):
-            item.setVisible(self.guided_active)
-        if not self.guided_active:
+        session = self.guided_active
+        for item in (
+            self.step_bar,
+            self.guide_status,
+            self.key_label,
+            self.result_label,
+            self.begin_button,
+            self.redo_button,
+        ):
+            item.setVisible(session)
+        if not session:
+            self.notice_label.setVisible(False)
+            self.next_label.setVisible(False)
             if self.bundle_path and self.stop_reason == "protocol_complete":
                 self.prompt_label.setText("这一次录完了")
                 missed = (
@@ -494,41 +610,80 @@ class ContactCaptureWindow(QWidget):
                     f"请重新录一次完整的。已录的部分保存在：{self.bundle_path.name}"
                 )
             else:
-                self.prompt_label.setText("点「开始采集」后，这里会一步步提示动作")
-                self.note_label.setText("提示要求时，手指碰到就按住空格，离开就松开。")
+                self.prompt_label.setText("点「开始采集」后，这里会一段一段提示动作")
+                self.note_label.setText(
+                    "每段先读提示，读完按空格开始，到时间自动停。"
+                    "提示要求时，手指碰到就按住空格，离开就松开。"
+                )
             return
-        elapsed = now - self.protocol_start
-        index = contact_protocol.position(self.schedule, elapsed)
-        if index is None:
-            return
-        start, end, step = self.schedule[index]
-        rounds = max(item.round for _, _, item in self.schedule)
-        self.prompt_label.setText(step.text)
-        self.note_label.setText(step.note)
-        self.step_bar.setValue(int(1000 * (elapsed - start) / (end - start)))
-        self.guide_status.setText(
-            (f"第 {step.round}/{rounds} 轮" if step.round else "准备")
-            + f" · 已用 {_clock_text(elapsed)} / {_clock_text(self.schedule[-1][1])}"
-            + f" · 这一步还剩 {math.ceil(end - elapsed)} 秒"
-        )
+        clip = self.clips[self.clip_index]
+        rounds = max(item.round for item in self.clips)
+        place = f"第 {clip.round}/{rounds} 轮 · 第 {self.clip_index + 1}/{len(self.clips)} 段"
+        notice = clip.notice or self.notice
+        self.notice_label.setText(notice)
+        self.notice_label.setVisible(bool(notice))
         hand = "手在画面内" if self.hand_present else "没有检测到手"
         self.key_label.setText(("空格：按住中" if self.key_down else "空格：未按") + f" · {hand}")
         self.key_label.setStyleSheet("color:#5fd38d; font-weight:600;" if self.key_down else "")
-        following = self.schedule[index + 1][2].text if index + 1 < len(self.schedule) else "结束"
-        self.next_label.setText(f"下一步：{following}")
+        self.begin_button.setEnabled(not self.clip_running and fresh)
+        self.redo_button.setEnabled(not self.clip_running and self.last_range is not None)
+        if self.clip_running:
+            elapsed = now - self.protocol_start
+            first, end = self.clip_range
+            begun, finished = self.schedule[first][0], self.schedule[end - 1][1]
+            index = next((i for i in range(first, end) if elapsed < self.schedule[i][1]), end - 1)
+            _, stop, step = self.schedule[index]
+            self.prompt_label.setText(step.text)
+            self.note_label.setText(step.note)
+            self.step_bar.setValue(int(1000 * (elapsed - begun) / (finished - begun)))
+            self.guide_status.setText(f"{place} · 正在录，还剩 {math.ceil(finished - elapsed)} 秒")
+            self.next_label.setVisible(index + 1 < end)
+            if index + 1 < end:
+                self.next_label.setText(
+                    f"{math.ceil(stop - elapsed)} 秒后：{self.schedule[index + 1][2].text}"
+                )
+            self.result_label.setText("")
+            return
+        self.prompt_label.setText(clip.text)
+        self.note_label.setText(clip.steps[0].note if len(clip.steps) == 1 else "")
+        self.step_bar.setValue(0)
+        self.guide_status.setText(f"{place} · 这一段 {clip.seconds:.0f} 秒 · 读完后按空格开始")
+        self.next_label.setVisible(False)
+        self.result_label.setStyleSheet("")
+        if not fresh:
+            self.result_label.setText("相机画面中断，恢复后才能开始这一段。")
+        elif self.last_range is None:
+            self.result_label.setText("上一段已作废，现在重录这一段。" if self.redone else "")
+        elif self.last_marks is None:
+            self.result_label.setText("上一段录完了。没做好可以按退格键重录。")
+        elif self.last_marks:
+            self.result_label.setText(
+                f"上一段收到 {self.last_marks} 次空格。次数不对或没做好，可以按退格键重录。"
+            )
+        else:
+            self.result_label.setStyleSheet("color:#f0b35a; font-weight:600;")
+            self.result_label.setText(
+                "上一段没有收到空格。请按退格键重录；如果按了却没收到，先点一下这个窗口。"
+            )
 
     def _refresh(self):
         if self._closed:
             return
         now = self.clock()
-        if self._protocol_done(now):
-            self._finish("protocol_complete")
+        if (
+            self.clip_running
+            and now - self.protocol_start >= self.schedule[self.clip_range[1] - 1][1]
+        ):
+            self._end_clip()
+            if self.clip_index >= len(self.clips):
+                self._finish("protocol_complete")
         fresh = self._fresh(now)
         if self.recorder_active and not fresh:
             stalled = self.last_feed is None or now - self.last_feed > self.GUIDED_STALL
-            if not self.guided_active or stalled:
+            # Between clips a stalled camera only blocks the next start.
+            if not self.guided_active or (self.clip_running and stalled):
                 self._finish("stale_input")
-        self._refresh_guide(now)
+        self._refresh_guide(now, fresh)
         active = self.recorder_active
         self.start_button.setEnabled(
             not active
@@ -543,7 +698,9 @@ class ContactCaptureWindow(QWidget):
         self.guided_box.setEnabled(not active)
         self.count_label.setText(f"已写入 {self.count} 帧 · 其中无手 {self.missing_count} 帧")
         if active and not fresh:
-            self.status_label.setText("相机画面中断，等待恢复；超过 5 秒会停止并保存")
+            self.status_label.setText("相机画面中断，等待恢复；录制中超过 5 秒会停止并保存")
+        elif self.guided_active and not self.clip_running:
+            self.status_label.setText("两段之间不录制 · 读完提示再开始")
         elif active:
             self.status_label.setText("正在采集新的相机帧 · 不保存图像、不自动生成真值")
         elif self.stop_reason:
