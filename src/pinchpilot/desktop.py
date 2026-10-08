@@ -1021,7 +1021,7 @@ class DesktopWindow(QMainWindow):
             from .contact_capture import ContactCaptureWindow
 
             self.controller.begin_capture()
-            candidate = ContactCaptureWindow(self.workspace, self)
+            candidate = ContactCaptureWindow(self.workspace, self, guided=True)
             # A real frame must arrive after opening; no cached frame is recorded.
             candidate.invalidate(self.controller.clock(), self.controller.source)
             candidate.show()

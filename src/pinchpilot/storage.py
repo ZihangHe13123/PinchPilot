@@ -91,6 +91,7 @@ def read_recording(path: Path) -> tuple[dict, list[HandFrame]]:
                 if row.pop("type") != "frame":
                     raise ValueError("记录类型无效")
                 row["landmarks"] = tuple(tuple(p) for p in row["landmarks"])
+                row["world_landmarks"] = tuple(tuple(p) for p in row.get("world_landmarks", ()))
                 frame = HandFrame(**row)
                 if not math.isfinite(frame.timestamp) or (
                     frames and frame.timestamp <= frames[-1].timestamp

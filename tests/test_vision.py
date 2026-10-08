@@ -85,6 +85,10 @@ def test_tracker_requests_both_hands_and_selects_control_after_detector_reorderi
                 for _, position in order
             ],
             handedness=[[SimpleNamespace(category_name=side, score=0.99)] for side, _ in order],
+            hand_world_landmarks=[
+                [SimpleNamespace(x=position / 7, y=-0.01 * i, z=0.002 * i) for i in range(21)]
+                for _, position in order
+            ],
         )
 
     right, left = ("Right", 0.35), ("Left", 0.7)
@@ -118,7 +122,13 @@ def test_tracker_requests_both_hands_and_selects_control_after_detector_reorderi
     for i in range(4):
         selected = tracker.process(rgb, 1 + i / 30)
     assert selected.handedness == "Right"
-    assert selected.landmarks == synthetic_hand(1, x=0.35).landmarks
+    # Coordinates are kept to six decimals; the world landmarks of the same hand come along.
+    assert selected.landmarks == tuple(
+        tuple(round(value, 6) for value in point) for point in synthetic_hand(1, x=0.35).landmarks
+    )
+    assert selected.world_landmarks == tuple(
+        (round(0.35 / 7, 6), round(-0.01 * i, 6), round(0.002 * i, 6)) for i in range(21)
+    )
     assert not tracker.process(rgb, 1 + 4 / 30).landmarks
     assert tracker.selector.locked_hand == "Right"
     tracker.close()

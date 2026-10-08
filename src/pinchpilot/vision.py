@@ -47,6 +47,12 @@ def fetch_model(path: Path | None = None) -> Path:
     return path
 
 
+def _point(landmark):
+    # MediaPipe gives float32. Six decimals is a thousandth of a pixel in the image and a
+    # micrometre in world coordinates, and it halves the size of a keypoint recording.
+    return (round(landmark.x, 6), round(landmark.y, 6), round(landmark.z, 6))
+
+
 class Tracker:
     def __init__(self, model_path: Path, preferred_hand="auto"):
         import mediapipe as mp
@@ -73,14 +79,20 @@ class Tracker:
             self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb), stamp
         )
         aspect = rgb.shape[1] / rgb.shape[0]
+        worlds = getattr(result, "hand_world_landmarks", None) or ()
         frames = []
-        for landmarks, categories in zip(result.hand_landmarks, result.handedness):
+        for index, (landmarks, categories) in enumerate(
+            zip(result.hand_landmarks, result.handedness)
+        ):
             if not categories:
                 continue
-            points = tuple((p.x, p.y, p.z) for p in landmarks)
+            points = tuple(_point(p) for p in landmarks)
+            world = tuple(_point(p) for p in worlds[index]) if index < len(worlds) else ()
             handedness = categories[0]
             frames.append(
-                HandFrame(timestamp, points, aspect, handedness.category_name, handedness.score)
+                HandFrame(
+                    timestamp, points, aspect, handedness.category_name, handedness.score, world
+                )
             )
         return self.selector.select(frames, timestamp, aspect)
 

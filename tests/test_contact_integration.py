@@ -48,6 +48,7 @@ def test_capture_open_only_cannot_record_or_activate_native(application, tmp_pat
         child = window.contact_capture_window
         assert child is not None and not child.recorder_active and rig.control.capture_active
         assert not child.start_button.isEnabled()
+        assert child.guided_box.isChecked()  # The desktop opens the guided session.
         assert not rig.created
         assert not list((tmp_path / "data").glob("contact_recordings/*.jsonl"))
         window.open_practice()

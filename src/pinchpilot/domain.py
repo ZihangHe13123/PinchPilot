@@ -9,6 +9,10 @@ class HandFrame:
     handedness: str = ""
     # MediaPipe's handedness score is NOT a joint visibility/confidence score.
     handedness_score: float = 0.0
+    # MediaPipe world landmarks: metres, origin at the hand's geometric centre. Recorded for
+    # later analysis only; control and contact-v1 features do not read them. Empty when the
+    # source has none (synthetic frames, recordings made before they were stored).
+    world_landmarks: tuple[tuple[float, float, float], ...] = ()
 
 
 @dataclass(frozen=True)
