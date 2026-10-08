@@ -110,6 +110,51 @@ def predict(network, x, batch=2048):
     return np.concatenate(scores, axis=0) if scores else np.empty((0, 3), dtype=np.float32)
 
 
+def pretrain(network, x, *, epochs, mask, learning_rate, batch_size, seed):
+    """Teach the temporal CNN's two convolutions to rebuild windows they see only in part.
+
+    A fraction `mask` of each window is blanked: whole landmarks (their three coordinates) in
+    single frames, and single values among the distance and interval features. The
+    convolutions' vector at the last frame goes through a throwaway linear layer that must
+    give back the blanked values. No labels are used. Inputs are normalized, so a blanked
+    value is the feature's mean. The classification head is left untouched.
+    """
+    torch = _torch()
+    count, frames, width = x.shape
+    inputs = torch.from_numpy(x)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        decoder = torch.nn.Linear(network.conv2.out_channels, frames * width)
+        generator = torch.Generator().manual_seed(seed)
+    parameters = [*network.conv1.parameters(), *network.conv2.parameters(), *decoder.parameters()]
+    optimizer = torch.optim.Adam(parameters, lr=learning_rate)
+    rng = np.random.default_rng(seed)
+    history = []
+    with _deterministic_cpu(torch):
+        for epoch in range(1, epochs + 1):
+            order = rng.permutation(count)
+            total = weight = 0.0
+            for start in range(0, count, batch_size):
+                batch = inputs[order[start : start + batch_size]]
+                hidden = torch.rand((len(batch), frames, 21), generator=generator) < mask
+                rest = torch.rand((len(batch), frames, width - 63), generator=generator) < mask
+                blank = torch.cat((hidden.repeat_interleave(3, dim=2), rest), dim=2)
+                rebuilt = decoder(
+                    _last_output(batch.masked_fill(blank, 0.0), network.conv1, network.conv2)
+                )
+                error = (rebuilt.reshape(batch.shape) - batch) ** 2
+                loss = (error * blank).sum() / blank.sum().clamp(min=1)
+                if not torch.isfinite(loss):
+                    raise ValueError("预训练损失不是有限值")
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                total += float(loss.detach()) * len(batch)
+                weight += len(batch)
+            history.append({"epoch": epoch, "masked_error": total / weight})
+    return {"epochs": epochs, "mask": mask, "windows": count, "history": history}
+
+
 def train(
     network,
     x,

@@ -2,9 +2,10 @@
   "schema": "pinchpilot-contact-settings-v1",
   "model": "cnn",
   "seed": 42,
-  "note": "channels 通道数，epochs 最多训练几轮，learning_rate 学习率，frames 用最近几帧，stride 训练时每几个窗口取一个，positive_weight 可以填 balanced。",
+  "note": "channels 通道数，epochs 最多训练几轮，learning_rate 学习率，frames 用最近几帧，stride 训练时每几个窗口取一个，positive_weight 可以填 balanced。pretrain_epochs 大于 0 时先做自编码器预训练，mask 是遮住的比例。label_fraction 小于 1 时只用一部分标签。",
   "candidates": [
     {"name": "基础", "channels": 32, "epochs": 15, "learning_rate": 0.001, "frames": 8},
+    {"name": "基础＋预训练", "channels": 32, "epochs": 15, "learning_rate": 0.001, "frames": 8, "pretrain_epochs": 10, "mask": 0.3},
     {"name": "窄一些", "channels": 16, "epochs": 15, "learning_rate": 0.001, "frames": 8}
   ]
 }
