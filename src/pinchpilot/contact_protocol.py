@@ -3,6 +3,9 @@
 Pure logic with no Qt, camera or file access. Prompts only organise a session. The labels
 built here come from the prompt on screen and from the Space key the person holds while two
 fingers touch; they are a draft for human review, never ground truth.
+
+The session is recorded clip by clip. The person reads what a clip asks for, starts it when
+ready, and it stops by itself after its seconds.
 """
 
 from dataclasses import dataclass
@@ -11,7 +14,10 @@ import numpy as np
 
 from .contact_data import CHANNELS
 
-NAME = "pinchpilot-guided-session-1"
+# Session 1 ran every step on one continuous timer. A first real recording showed that the
+# prompts could not be read and followed at that pace, so session 2 is self-paced.
+NAME = "pinchpilot-guided-session-2"
+NAMES = ("pinchpilot-guided-session-1", NAME)  # Both use the same rounds and step names.
 KEY = "key"  # In a step's labels: the Space key marks this channel.
 
 # Frames near a change of prompt or of the Space key stay unlabelled, in seconds.
@@ -26,8 +32,10 @@ POSES = (
     "手离镜头近一些或远一些",
     "换成你觉得最放松的姿势",
 )
-MARK = "碰到时按住空格，离开时松开"
+MARK = "每次碰到时按住空格，离开时松开"
 HOLD = "按住期间一直按着空格"
+SLOW = "慢慢做，两三秒一次"
+SHORT_STEP = 4.0  # Runs of shorter steps without Space marks are recorded as one clip.
 
 
 @dataclass(frozen=True)
@@ -37,12 +45,40 @@ class Step:
     seconds: float
     labels: tuple  # One of 0, 1, None or KEY for each of CHANNELS (middle, index, ring).
     note: str = ""
-    round: int = 0  # 1-based; 0 for the countdown before the first round.
+    round: int = 0  # 1-based; 0 outside the rounds.
+
+
+@dataclass(frozen=True)
+class Clip:
+    """What is recorded in one go: one step, or a run of short steps shown one after another."""
+
+    steps: tuple
+    notice: str = ""  # Shown before it and not recorded, e.g. the hand pose of a new round.
+
+    @property
+    def seconds(self):
+        return sum(step.seconds for step in self.steps)
+
+    @property
+    def round(self):
+        return self.steps[0].round
+
+    @property
+    def uses_key(self):
+        return any(KEY in step.labels for step in self.steps)
+
+    @property
+    def text(self):
+        """What to read before starting the clip."""
+        if len(self.steps) == 1:
+            return self.steps[0].text
+        prompts = " → ".join(dict.fromkeys(step.text for step in self.steps))
+        return f"屏幕会自动轮流显示提示，跟着做，共 {len(self.steps)} 步：{prompts}"
 
 
 def _round(number, pose):
     steps = [
-        Step("pose", f"换姿势：{pose}", 8, (None, None, None), "可以把手移开再放回来"),
+        Step("pose", f"这一轮的手部朝向：{pose}", 8, (None, None, None)),
         Step("open", "手放松张开，手指互不接触", 6, (0, 0, 0)),
     ]
     for _ in range(4):
@@ -50,7 +86,13 @@ def _round(number, pose):
         steps.append(Step("grip_off", "松开", 2.5, (0, 0, 0)))
     steps += [
         Step("grip_move", "捏住拇指和中指，小幅移动手或手腕", 10, (1, 0, 0)),
-        Step("grip_index_tap", "保持捏住。食指点拇指，大约 8 次", 22, (1, KEY, 0), MARK),
+        Step(
+            "grip_index_tap",
+            f"保持捏住。食指点拇指，{SLOW}，大约 8 次",
+            22,
+            (1, KEY, 0),
+            MARK,
+        ),
         Step(
             "grip_index_hold",
             "保持捏住。食指按住拇指约 2 秒再松开，大约 4 次",
@@ -58,10 +100,16 @@ def _round(number, pose):
             (1, KEY, 0),
             HOLD,
         ),
-        Step("index_tap", "松开中指。只用食指点拇指，大约 6 次", 16, (0, KEY, 0), MARK),
-        Step("ring_tap", "松开中指。拇指碰无名指，大约 5 次", 14, (0, 0, KEY), MARK),
+        Step("index_tap", f"松开中指。只用食指点拇指，{SLOW}，大约 6 次", 16, (0, KEY, 0), MARK),
+        Step("ring_tap", f"松开中指。拇指碰无名指，{SLOW}，大约 5 次", 14, (0, 0, KEY), MARK),
         Step("ring_hold", "拇指按住无名指约 2 秒再松开，大约 3 次", 12, (0, 0, KEY), HOLD),
-        Step("grip_ring_tap", "捏住拇指和中指。无名指也碰拇指，大约 4 次", 12, (1, 0, KEY), MARK),
+        Step(
+            "grip_ring_tap",
+            f"捏住拇指和中指。无名指也碰拇指，{SLOW}，大约 4 次",
+            12,
+            (1, 0, KEY),
+            MARK,
+        ),
         Step("index_near", "食指靠近拇指但不要碰到，来回约 5 次", 12, (0, 0, 0), "不要按空格"),
         Step(
             "grip_index_near",
@@ -76,11 +124,43 @@ def _round(number, pose):
 
 
 def session():
-    """The steps of one full session, about 14 minutes."""
-    steps = [Step("ready", "准备：把一只手放进画面", 4, (None, None, None))]
+    """The steps of one full session: about 14 minutes of recording, plus reading time."""
+    steps = []
     for number, pose in enumerate(POSES, 1):
         steps += _round(number, pose)
     return steps
+
+
+def clips(steps):
+    """Group a session's steps into the clips it is recorded in.
+
+    A step without any label is a notice for the clip after it and is not recorded. A run of
+    short steps of one round that need no Space marks forms one clip, because the point of
+    those steps is the switch between them. Every other step is a clip of its own.
+    """
+    result, run, notices = [], [], []
+
+    def close():
+        if run:
+            result.append(Clip(tuple(run), "；".join(notices)))
+            run.clear()
+            notices.clear()
+
+    for step in steps:
+        if step.seconds <= 0 or len(step.labels) != len(CHANNELS):
+            raise ValueError("步骤时长或标签数量无效")
+        if all(label is None for label in step.labels):
+            close()
+            notices.append(step.text)
+            continue
+        short = step.seconds < SHORT_STEP and KEY not in step.labels
+        if not short or (run and run[0].round != step.round):
+            close()
+        run.append(step)
+        if not short:
+            close()
+    close()
+    return result
 
 
 def timeline(steps):

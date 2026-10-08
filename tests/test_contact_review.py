@@ -51,6 +51,7 @@ SHORT = [
     Step("index_near", "食指靠近拇指但不要碰到", 5.0, (0, 0, 0), "不要按空格", 2),
 ]
 LAG = 0.12  # The simulated person presses Space this long after the fingers touch.
+PAUSE = 2.0  # And takes this long to read each prompt before starting the clip.
 
 
 @pytest.fixture(scope="module")
@@ -61,8 +62,8 @@ def application():
 def record(directory, participant="P01", lag=LAG, seed=1, stop_at=None):
     """Run a guided capture with a synthetic hand that follows the prompts.
 
-    Returns the zip and, for every frame time from the start of the session, whether the
-    index and the ring finger were really touching.
+    Returns the zip and, for every recorded frame, whether the index and the ring finger
+    were really touching.
     """
     window = ContactCaptureWindow(directory, guided=True)
     window.timer.stop()
@@ -90,13 +91,19 @@ def record(directory, participant="P01", lag=LAG, seed=1, stop_at=None):
     window.consent.setChecked(True)
     window.start_recording()
     start, schedule = now[0], window.schedule
-    waiting, before, truth = [], False, []
+    waiting, before, truth, idle = [], False, [], 0.0
     while window.recorder_active:
         now[0] += 1 / 30
         elapsed = now[0] - start
         if stop_at is not None and elapsed >= stop_at:
             window.stop_recording()
             break
+        if not window.clip_running:
+            idle += 1 / 30
+            if idle >= PAUSE:  # Done reading: start the clip.
+                key(True)
+                key(False)
+                idle = 0.0
         position = contact_protocol.position(schedule, elapsed)
         grip = touching = False
         labels = (0, 0, 0)
@@ -114,7 +121,8 @@ def record(directory, participant="P01", lag=LAG, seed=1, stop_at=None):
         while waiting and waiting[0][0] <= now[0]:
             key(waiting.pop(0)[1])
         index, ring = touching and labels[1] == KEY, touching and labels[2] == KEY
-        truth.append((elapsed, index, ring))
+        if window.clip_running:
+            truth.append((elapsed, index, ring))
         window.feed(hand(grip, index, ring), now[0])
     bundle = window.bundle_path
     window.close()
@@ -142,15 +150,24 @@ def accept_all(session, discard=()):
 def test_units_merge_runs_of_short_steps_and_leave_out_unlabelled_ones(session):
     assert session.participant == "P01" and session.source == "camera"
     assert session.protocol == contact_protocol.NAME
+    # The units are the clips the session was recorded in; the notice before the first one
+    # was never recorded.
     assert [(unit.steps, unit.round, unit.uses_key) for unit in session.units] == [
-        ((1,), 1, False),
-        ((2, 3, 4, 5), 1, False),
-        ((6,), 1, True),
-        ((7,), 2, True),
-        ((8,), 2, False),
+        ((0,), 1, False),
+        ((1, 2, 3, 4), 1, False),
+        ((5,), 1, True),
+        ((6,), 2, True),
+        ((7,), 2, False),
     ]
     assert session.units[1].title == "捏住：拇指和中指 / 松开，共 4 步"
-    assert session.units[1].start == 7.0 and session.units[1].end == 18.0
+    assert session.units[1].end - session.units[1].start == pytest.approx(11.0)
+    for earlier, later in zip(session.units, session.units[1:]):
+        assert later.start == pytest.approx(earlier.end + PAUSE, abs=0.1)  # The reading pause.
+    # Frames exist only inside the clips.
+    inside = np.zeros(len(session.times), dtype=bool)
+    for unit in session.units:
+        inside |= (session.times >= unit.start) & (session.times <= unit.end + 0.05)
+    assert inside.all()
     full = contact_protocol.timeline(contact_protocol.session())
     units = contact_review._units(full, full[-1][1])
     assert len(units) == 60 and sum(unit.uses_key for unit in units) == 30
@@ -161,6 +178,7 @@ def test_units_merge_runs_of_short_steps_and_leave_out_unlabelled_ones(session):
 
 def test_shift_undoes_the_reaction_delay_and_discarding_blanks_one_unit(session, recorded):
     truth = np.array([(index, ring) for _, index, ring in recorded[1]], dtype=bool)
+    assert abs(len(truth) - len(session.times)) <= 1
     truth = truth[: len(session.times)]
 
     def wrongly_touching(margins):
@@ -508,9 +526,11 @@ def test_review_command_opens_and_closes(application, folder, capsys):
 
 
 def test_a_session_stopped_early_can_still_be_reviewed(application, tmp_path):
-    bundle, _ = record(tmp_path, participant="P03", seed=4, stop_at=20.5)
+    bundle, _ = record(tmp_path, participant="P03", seed=4, stop_at=25.0)
     session = load_session(bundle)
-    assert session.ended == pytest.approx(20.5, abs=0.05)
-    assert [unit.steps for unit in session.units] == [(1,), (2, 3, 4, 5), (6,)]
+    assert session.ended == pytest.approx(25.0, abs=0.05)
+    # Stopped three seconds into the third clip, which is 8 seconds long.
+    assert [unit.steps for unit in session.units] == [(0,), (1, 2, 3, 4), (5,)]
+    assert session.units[2].end > session.ended > session.units[2].start
     labels = frame_labels(session, Margins(), {})
-    assert (labels[session.times >= 20.5] == -1).all()
+    assert (labels[session.times >= 25.0] == -1).all() and (labels[:, 0] == 1).any()

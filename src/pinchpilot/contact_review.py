@@ -36,7 +36,6 @@ REVIEW_SCHEMA = "pinchpilot-contact-review-v1"
 CROSSCHECK_SCHEMA = "pinchpilot-contact-crosscheck-v1"
 ACCEPTED, DISCARDED = "accepted", "discarded"
 AGREE, DISAGREE = "agree", "disagree"
-SHORT_STEP = 4.0  # Runs of shorter steps without Space marks are reviewed as one unit.
 LIMITS = {"shift": (-0.3, 0.5), "settle": (0.2, 2.5), "lead": (0.1, 1.5), "edge": (0.03, 0.4)}
 
 
@@ -124,8 +123,15 @@ def _units(schedule, ended):
         if start >= ended or all(label is None for label in step.labels):
             close()
             continue
-        short = end - start < SHORT_STEP and contact_protocol.KEY not in step.labels
-        if not short or (run and schedule[run[0]][2].round != step.round):
+        short = (
+            end - start < contact_protocol.SHORT_STEP and contact_protocol.KEY not in step.labels
+        )
+        # The same grouping as the clips a session is recorded in: short steps that follow
+        # each other without a pause, within one round.
+        apart = run and (
+            schedule[run[0]][2].round != step.round or abs(schedule[run[-1]][1] - start) > 1e-6
+        )
+        if not short or apart:
             close()
         run.append(index)
         if not short:

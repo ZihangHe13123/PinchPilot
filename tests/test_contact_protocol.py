@@ -7,12 +7,9 @@ from pinchpilot.contact_data import CHANNELS
 from pinchpilot.contact_protocol import KEY, Step
 
 
-def test_session_runs_about_fourteen_minutes_and_covers_every_contact_both_ways():
-    schedule = protocol.timeline(protocol.session())
-    assert 13 * 60 <= schedule[-1][1] <= 15 * 60
-    assert all(a[1] == b[0] for a, b in zip(schedule, schedule[1:])) and schedule[0][0] == 0
-    steps = [step for _, _, step in schedule]
-    assert {step.round for step in steps} == set(range(len(protocol.POSES) + 1))
+def test_session_records_about_fourteen_minutes_and_covers_every_contact_both_ways():
+    steps = protocol.session()
+    assert {step.round for step in steps} == set(range(1, len(protocol.POSES) + 1))
     for channel in range(len(CHANNELS)):
         seen = {step.labels[channel] for step in steps}
         assert 0 in seen and seen & {1, KEY}  # Every contact is asked for both apart and touching.
@@ -20,6 +17,56 @@ def test_session_runs_about_fourteen_minutes_and_covers_every_contact_both_ways(
     assert any(step.labels == (1, 0, 0) for step in steps)
     assert any(step.labels == (1, KEY, 0) for step in steps)  # Click while the grip is held.
     assert all(sum(label == KEY for label in step.labels) <= 1 for step in steps)
+    recorded = sum(clip.seconds for clip in protocol.clips(steps))
+    assert 13 * 60 <= recorded <= 15 * 60
+
+
+def test_clips_group_short_steps_and_turn_unlabelled_steps_into_notices():
+    clips = protocol.clips(protocol.session())
+    assert len(clips) == 60 and sum(clip.uses_key for clip in clips) == 30
+    # Nothing unlabelled is recorded; every labelled step is in exactly one clip, in order.
+    labelled = [
+        step for step in protocol.session() if any(label is not None for label in step.labels)
+    ]
+    assert [step for clip in clips for step in clip.steps] == labelled
+    for number, pose in enumerate(protocol.POSES):
+        first = clips[12 * number]
+        assert first.round == number + 1 and first.notice == f"这一轮的手部朝向：{pose}"
+        assert all(clip.notice == "" for clip in clips[12 * number + 1 : 12 * number + 12])
+        grips = clips[12 * number + 1]
+        assert [step.name for step in grips.steps] == ["grip_on", "grip_off"] * 4
+        assert grips.seconds == 22 and not grips.uses_key
+        assert grips.text == "屏幕会自动轮流显示提示，跟着做，共 8 步：捏住：拇指和中指 → 松开"
+    assert clips[3].text.startswith("保持捏住。食指点拇指，慢慢做") and clips[3].uses_key
+    assert all(len(clip.steps) == 1 for clip in clips if clip.uses_key)
+
+    def step(name, seconds, labels, round=1):
+        return Step(name, name, seconds, labels, round=round)
+
+    grouped = protocol.clips(
+        [
+            step("a", 2, (0, 0, 0)),
+            step("b", 3, (1, 0, 0)),
+            step("note", 5, (None, None, None)),  # A notice splits a run.
+            step("c", 2, (0, 0, 0)),
+            step("d", 2, (0, KEY, 0)),  # Space-marked steps always stand alone.
+            step("e", 2, (0, 0, 0)),
+            step("f", 2, (0, 0, 0), round=2),  # So does a new round.
+            step("g", 4, (0, 0, 0), round=2),  # And a step that is not short.
+        ]
+    )
+    assert [[s.name for s in clip.steps] for clip in grouped] == [
+        ["a", "b"],
+        ["c"],
+        ["d"],
+        ["e"],
+        ["f"],
+        ["g"],
+    ]
+    assert [clip.notice for clip in grouped] == ["", "note", "", "", "", ""]
+    assert protocol.clips([step("only", 5, (None, None, None))]) == []
+    with pytest.raises(ValueError):
+        protocol.clips([step("bad", 0, (0, 0, 0))])
 
 
 def test_position_follows_the_schedule_and_is_none_outside_it():

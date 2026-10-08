@@ -239,9 +239,10 @@ def test_close_saves_partial_emits_once_and_destroys_child(application, tmp_path
     parent.close()
 
 
-# ---- Guided sessions: on-screen steps, the Space key and draft labels.
+# ---- Guided sessions: self-paced clips, the Space key and draft labels.
 
 SHORT = [
+    Step("pose", "这一轮的手部朝向：正对镜头", 8.0, (None, None, None), round=1),
     Step("hold", "捏住：拇指和中指", 2.0, (1, 0, 0), round=1),
     Step("tap", "保持捏住。食指点拇指", 3.0, (1, KEY, 0), "碰到时按住空格", 1),
 ]
@@ -259,10 +260,30 @@ def guided(application, tmp_path):
     application.processEvents()
 
 
-def space(window, pressed, repeat=False):
+def key(window, pressed, which=Qt.Key.Key_Space, repeat=False):
     kind = QEvent.Type.KeyPress if pressed else QEvent.Type.KeyRelease
-    event = QKeyEvent(kind, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier, " ", repeat)
+    event = QKeyEvent(kind, which, Qt.KeyboardModifier.NoModifier, "", repeat)
     (window.keyPressEvent if pressed else window.keyReleaseEvent)(event)
+
+
+def space(window, pressed, repeat=False):
+    key(window, pressed, repeat=repeat)
+
+
+def tap(window, which=Qt.Key.Key_Space):
+    key(window, True, which)
+    key(window, False, which)
+
+
+def run(window, seconds):
+    return [feed(window) for _ in range(round(seconds * 30))]
+
+
+def begin(window):
+    """Wait out the lock after the previous clip, then start the next one with Space."""
+    run(window, window.START_LOCK + 0.1)
+    tap(window)
+    assert window.clip_running
 
 
 def frame_labels(window):
@@ -286,54 +307,86 @@ def test_guided_mode_is_opt_in_and_free_recording_ignores_the_space_key(window, 
     assert not json.loads(window.summary_path.read_text(encoding="utf-8"))["guided"]
 
 
-def test_guided_session_shows_each_step_and_saves_a_draft_from_prompts_and_space(guided):
+def test_guided_session_waits_for_each_start_and_records_only_running_clips(guided):
     guided.participant.setText("P02")
     guided.session.setText("2")
     start(guided)
     began = guided.test_now
-    assert guided.guided_active and not guided.guided_box.isEnabled()
-    assert guided.focusWidget() is guided  # Space cannot reach the consent box or a button.
-    assert (
-        guided.prompt_label.text() == "捏住：拇指和中指"
-        and "第 1/1 轮" in guided.guide_status.text()
-    )
-    for _ in range(90):
-        feed(guided)
+    assert guided.guided_active and not guided.clip_running
+    assert not guided.guided_box.isEnabled() and guided.focusWidget() is guided
+    # The first clip is on screen with the notice before it, and nothing is recorded yet.
+    assert guided.prompt_label.text() == "捏住：拇指和中指"
+    assert guided.notice_label.text() == "这一轮的手部朝向：正对镜头"
+    assert "第 1/1 轮 · 第 1/2 段 · 这一段 2 秒 · 读完后按空格开始" in guided.guide_status.text()
+    run(guided, 3.0)
+    assert guided.count == 0 and guided.recorder.count == 0 and guided.schedule == []
+    assert "两段之间不录制" in guided.status_label.text()
+
+    tap(guided)
+    first_start = guided.test_now - began
+    assert guided.clip_running and "正在录，还剩 2 秒" in guided.guide_status.text()
+    assert not guided.begin_button.isEnabled() and not guided.redo_button.isEnabled()
+    run(guided, 2.1)
+    assert not guided.clip_running and guided.clip_index == 1 and 59 <= guided.count <= 61
+    written = guided.count
     assert guided.prompt_label.text() == "保持捏住。食指点拇指"
-    assert guided.note_label.text() == "碰到时按住空格" and "结束" in guided.next_label.text()
+    assert guided.note_label.text() == "碰到时按住空格"
+    assert "上一段录完了" in guided.result_label.text() and guided.redo_button.isEnabled()
+    # Reading the next prompt takes as long as it takes; none of it is written.
+    run(guided, 4.0)
+    assert guided.count == written
+
+    tap(guided)  # This press starts the clip; it is not a mark.
+    second_start = guided.test_now - began
+    assert guided.clip_running and guided.key_events == [] and not guided.key_down
+    run(guided, 1.0)
     space(guided, True)
     space(guided, True, repeat=True)  # Auto-repeat while the key is held changes nothing.
     assert "按住中" in guided.key_label.text()
-    for _ in range(15):
-        feed(guided)
+    run(guided, 0.5)
     space(guided, False, repeat=True)
     space(guided, False)
     assert "未按" in guided.key_label.text()
-    for _ in range(100):
-        if not guided.recorder_active:
-            break
-        feed(guided)
+    run(guided, 1.6)
     assert not guided.recorder_active and guided.stop_reason == "protocol_complete"
     assert "已按提示录完" in guided.status_label.text()
 
     frames = read_contact_recording(guided.recording_path)[1]
     spec, rows = frame_labels(guided)
     assert spec["reviewed"] is False and spec["label_source"] == "protocol_draft"
-    assert len(rows) == len(frames)
+    assert spec["protocol"] == "pinchpilot-guided-session-2"
+    assert len(rows) == len(frames) and 149 <= len(frames) <= 152
     times = [frame.timestamp - began for frame in frames]
-    touching = [moment for moment, row in zip(times, rows) if row == (1, 1, 0)]
-    assert len(touching) >= 8 and 3.07 <= min(touching) and max(touching) < 3.43
+    # Frames exist only inside the two clips.
+    assert all(
+        first_start <= moment <= first_start + 2.05 or second_start <= moment <= second_start + 3.05
+        for moment in times
+    )
+    touching = [moment - second_start for moment, row in zip(times, rows) if row == (1, 1, 0)]
+    assert len(touching) >= 8 and 1.07 <= min(touching) and max(touching) < 1.47
     held = [moment for moment, row in zip(times, rows) if row == (1, 0, 0)]
-    assert any(moment < 2 for moment in held) and any(moment > 3.6 for moment in held)
-    assert all(row == (None, None, None) for moment, row in zip(times, rows) if moment < 0.8)
+    assert any(moment < first_start + 2 for moment in held)
+    assert any(moment > second_start + 1.6 for moment in held)
+    assert all(
+        row == (None, None, None) for moment, row in zip(times, rows) if moment < first_start + 0.8
+    )
     assert all(row[0] in (1, None) and row[2] in (0, None) for row in rows)
 
     record = json.loads(guided.protocol_path.read_text(encoding="utf-8"))
-    assert record["completed"] and [step["name"] for step in record["steps"]] == ["hold", "tap"]
+    assert record["completed"] and record["protocol"] == "pinchpilot-guided-session-2"
+    assert (record["clips_planned"], record["clips_recorded"], record["clips_redone"]) == (2, 2, 0)
+    steps = record["steps"]
+    assert [(step["name"], step["discarded"]) for step in steps] == [
+        ("hold", False),
+        ("tap", False),
+    ]
+    assert steps[0]["start"] == pytest.approx(first_start)
+    assert steps[0]["end"] == pytest.approx(first_start + 2.0)
+    assert steps[1]["start"] == pytest.approx(second_start) and second_start > first_start + 6
     assert [pressed for _, pressed in record["space_key"]] == [True, False]
+    assert record["space_key"][0][0] == pytest.approx(second_start + 1.0)
+    assert record["space_key"][1][0] == pytest.approx(second_start + 1.5)
     assert record["steps_without_space"] == []
-    assert record["space_key"][0][0] == pytest.approx(3.0)
-    assert record["space_key"][1][0] == pytest.approx(3.5)
     summary = json.loads(guided.summary_path.read_text(encoding="utf-8"))
     assert summary["guided"] and not summary["partial"] and summary["camera_gaps"] == 0
     assert guided.bundle_path.name == f"{guided.recording_path.stem}_P02_2.zip"
@@ -354,15 +407,137 @@ def test_guided_session_shows_each_step_and_saves_a_draft_from_prompts_and_space
     assert guided.bundle_path.name in guided.note_label.text()
 
 
-def test_guided_session_without_any_space_mark_says_so_and_leaves_the_channel_unlabelled(guided):
+def test_enter_and_the_button_also_start_a_clip_and_a_dead_camera_blocks_it(guided):
     start(guided)
-    for _ in range(200):
-        if not guided.recorder_active:
-            break
-        feed(guided)
+    guided.test_now += 2.0  # No frame for two seconds: the picture is stale.
+    guided._refresh()
+    assert guided.recorder_active and not guided.begin_button.isEnabled()
+    assert "相机画面中断" in guided.result_label.text()
+    tap(guided)
+    assert not guided.clip_running and guided.schedule == []
+    guided.test_now += 30.0  # A stalled camera between clips never ends the session.
+    guided._refresh()
+    assert guided.recorder_active
+    feed(guided)
+    assert guided.begin_button.isEnabled()
+    tap(guided, Qt.Key.Key_Return)
+    assert guided.clip_running
+    run(guided, 2.1)
+    run(guided, 0.2)
+    guided.begin_button.click()
+    assert guided.clip_running and guided.clip_index == 1
+
+
+def test_a_clip_can_be_redone_and_its_first_take_keeps_no_labels(guided):
+    start(guided)
+    began = guided.test_now
+    tap(guided, Qt.Key.Key_Backspace)  # Nothing to redo yet.
+    assert guided.clip_index == 0 and guided.redone == 0
+    tap(guided)
+    tap(guided, Qt.Key.Key_Backspace)  # Not while a clip is running either.
+    assert guided.clip_running and guided.redone == 0
+    run(guided, 2.1)
+    first_take = guided.count
+    tap(guided, Qt.Key.Key_Backspace)
+    assert guided.clip_index == 0 and guided.redone == 1
+    assert guided.prompt_label.text() == "捏住：拇指和中指"
+    assert "上一段已作废" in guided.result_label.text() and not guided.redo_button.isEnabled()
+    tap(guided, Qt.Key.Key_Backspace)  # The take before that one is out of reach.
+    assert guided.redone == 1
+    begin(guided)
+    run(guided, 2.1)
+    guided.redo_button.click()
+    assert guided.clip_index == 0 and guided.redone == 2
+    begin(guided)
+    run(guided, 2.1)
+    begin(guided)
+    run(guided, 1.0)
+    space(guided, True)
+    run(guided, 0.5)
+    space(guided, False)
+    run(guided, 1.7)
+    assert guided.stop_reason == "protocol_complete"
+
+    record = json.loads(guided.protocol_path.read_text(encoding="utf-8"))
+    assert (record["clips_recorded"], record["clips_redone"]) == (2, 2)
+    assert [(step["name"], step["discarded"]) for step in record["steps"]] == [
+        ("hold", True),
+        ("hold", True),
+        ("hold", False),
+        ("tap", False),
+    ]
+    assert [step["labels"] for step in record["steps"]] == [
+        [None, None, None],
+        [None, None, None],
+        [1, 0, 0],
+        [1, "key", 0],
+    ]
+    frames = read_contact_recording(guided.recording_path)[1]
+    rows = frame_labels(guided)[1]
+    kept_from = record["steps"][2]["start"]
+    discarded = [row for frame, row in zip(frames, rows) if frame.timestamp - began < kept_from]
+    assert len(discarded) >= 2 * first_take - 2 and set(discarded) == {(None, None, None)}
+    assert (1, 0, 0) in rows and (1, 1, 0) in rows
+
+
+def test_space_at_the_end_of_a_clip_cannot_start_the_next_one(guided):
+    guided.protocol = [
+        Step("tap", "食指点拇指", 3.0, (0, KEY, 0), round=1),
+        Step("hold", "捏住", 5.0, (1, 0, 0), round=1),
+    ]
+    start(guided)
+    began = guided.test_now
+    tap(guided)
+    clip_start = guided.test_now - began
+    run(guided, 2.5)
+    space(guided, True)  # Still holding when the clip stops by itself.
+    run(guided, 0.6)
+    assert not guided.clip_running and guided.clip_index == 1 and not guided.key_down
+    assert [pressed for _, pressed in guided.key_events] == [True, False]
+    assert guided.key_events[1][0] - began == pytest.approx(clip_start + 3.0)
+    assert "上一段收到 1 次空格" in guided.result_label.text()
+    space(guided, True, repeat=True)
+    assert not guided.clip_running
+    run(guided, guided.START_LOCK + 0.1)
+    space(guided, True, repeat=True)  # The key has not been let go yet.
+    assert not guided.clip_running
+    space(guided, False)
+    assert not guided.clip_running  # A release starts nothing.
+    tap(guided)
+    assert guided.clip_running and len(guided.key_events) == 2
+    run(guided, 5.1)
+    # Someone still tapping right after a clip ends: presses inside the lock are ignored.
+    assert guided.stop_reason == "protocol_complete"
+
+
+def test_taps_right_after_a_clip_are_ignored_until_the_lock_has_passed(guided):
+    start(guided)
+    tap(guided)
+    run(guided, 2.05)
+    assert not guided.clip_running and guided.clip_index == 1
+    tap(guided)
+    run(guided, guided.START_LOCK - 0.3)
+    tap(guided)
+    assert not guided.clip_running and guided.key_events == []
+    run(guided, 0.4)
+    tap(guided)
+    assert guided.clip_running
+
+
+def test_a_clip_without_space_marks_says_so_and_leaves_the_channel_unlabelled(guided):
+    guided.protocol = [
+        Step("tap", "食指点拇指", 3.0, (1, KEY, 0), round=1),
+        Step("hold", "捏住", 5.0, (1, 0, 0), round=1),
+    ]
+    start(guided)
+    tap(guided)
+    run(guided, 3.1)
+    assert "上一段没有收到空格。请按退格键重录" in guided.result_label.text()
+    begin(guided)
+    run(guided, 5.1)
     assert guided.stop_reason == "protocol_complete"
     record = json.loads(guided.protocol_path.read_text(encoding="utf-8"))
-    assert record["steps_without_space"] == [1]
+    assert record["steps_without_space"] == [0]
     rows = frame_labels(guided)[1]
     assert (1, 0, 0) in rows and (1, None, 0) in rows
     assert all(row[1] != 1 for row in rows)
@@ -372,26 +547,29 @@ def test_guided_session_without_any_space_mark_says_so_and_leaves_the_channel_un
 
 def test_guided_stop_before_the_end_is_partial_and_releases_a_held_key(guided):
     start(guided)
-    for _ in range(75):
-        feed(guided)
+    tap(guided)
+    run(guided, 2.1)
+    begin(guided)
+    run(guided, 0.5)
     space(guided, True)
     feed(guided)
     guided.stop_recording()
-    assert not guided.recorder_active and not guided.key_down
+    assert not guided.recorder_active and not guided.key_down and not guided.clip_running
     record = json.loads(guided.protocol_path.read_text(encoding="utf-8"))
-    assert not record["completed"]
+    assert not record["completed"] and record["clips_recorded"] == 1
     assert [pressed for _, pressed in record["space_key"]] == [True, False]
     summary = json.loads(guided.summary_path.read_text(encoding="utf-8"))
     assert summary["partial"] and summary["stop_reason"] == "user_stop"
     assert guided.bundle_path.exists() and guided.annotation_path.exists()
     assert "不完整" in guided.prompt_label.text() and "重新录" in guided.note_label.text()
-    space(guided, True)  # After the session the key is no longer recorded.
-    assert len(guided.key_events) == 2
+    tap(guided)  # After the session the key neither starts nor marks anything.
+    assert len(guided.key_events) == 2 and not guided.recorder_active
 
 
-def test_guided_session_rides_out_a_short_camera_stall_but_ends_on_a_long_one(guided):
+def test_a_running_clip_rides_out_a_short_camera_stall_but_ends_on_a_long_one(guided):
     guided.protocol = [Step("hold", "捏住", 60.0, (1, 0, 0), round=1)]
     start(guided)
+    tap(guided)
     first = [feed(guided) for _ in range(3)]
     guided.invalidate(guided.test_now + 0.3, "camera")
     guided.test_now += 1.0
@@ -409,6 +587,7 @@ def test_guided_session_rides_out_a_short_camera_stall_but_ends_on_a_long_one(gu
 
 def test_guided_session_still_ends_when_the_camera_source_changes(guided):
     start(guided)
+    tap(guided)
     frame = feed(guided)
     feed(guided, source="synthetic_demo")
     assert not guided.recorder_active and guided.stop_reason == "source_changed"
@@ -417,6 +596,7 @@ def test_guided_session_still_ends_when_the_camera_source_changes(guided):
 
 def test_draft_failure_keeps_the_recording_and_the_record_of_the_session(guided, monkeypatch):
     start(guided)
+    tap(guided)
     frame = feed(guided)
 
     def fail(*_):
