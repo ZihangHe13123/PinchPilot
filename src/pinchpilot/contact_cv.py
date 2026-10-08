@@ -31,6 +31,7 @@ MAX_CANDIDATES = 24
 _NETWORK = {
     "frames": 8,
     "stride": 2,
+    "label_fraction": 1.0,
     "channels": 32,
     "epochs": 15,
     "learning_rate": 0.001,
@@ -40,9 +41,16 @@ _NETWORK = {
 }
 # Every option a candidate may set, with the value used when it does not.
 DEFAULTS = {
-    "rules": {"frames": 1, "stride": 1, "statistic": "last"},
-    "forest": {"frames": 8, "stride": 3, "trees": 160, "depth": 12, "min_leaf": 2},
-    "cnn": dict(_NETWORK),
+    "rules": {"frames": 1, "stride": 1, "label_fraction": 1.0, "statistic": "last"},
+    "forest": {
+        "frames": 8,
+        "stride": 3,
+        "label_fraction": 1.0,
+        "trees": 160,
+        "depth": 12,
+        "min_leaf": 2,
+    },
+    "cnn": {**_NETWORK, "pretrain_epochs": 0, "mask": 0.3},
     "finger_cnn": {**_NETWORK, "channels": 24, "shared": True, "context": True},
 }
 
@@ -55,6 +63,9 @@ def _number(integer, low, high):
 CHECKS = {
     "frames": _number(True, 1, 64),
     "stride": _number(True, 1, 30),
+    "label_fraction": _number(False, 0.01, 1.0),
+    "pretrain_epochs": _number(True, 0, 500),
+    "mask": _number(False, 0.05, 0.9),
     "trees": _number(True, 10, 2000),
     "depth": _number(True, 1, 64),
     "min_leaf": _number(True, 1, 1000),
@@ -139,12 +150,36 @@ def _distances(x, options):
     return getattr(np, options["statistic"])(recent, axis=1)
 
 
-def _fit_and_score(model, options, seed, x, y, targets, select):
+def _label_subset(pool, rows, fraction, seed):
+    """About `fraction` of the labelled windows, taken as whole prompted segments.
+
+    A segment is one step of one round of one recording. Each kind of step keeps its share
+    of segments, so that every prompted action stays represented. Recordings without a
+    prompt record are cut into runs of 300 windows.
+    """
+    if fraction >= 1:
+        return rows
+    rng = np.random.default_rng(seed)
+    steps = pool.steps[rows].astype(np.int64)
+    part = np.where(steps >= 0, pool.rounds[rows], np.arange(len(rows)) // 300)
+    segment = pool.recordings[rows].astype(np.int64) * 10**9 + part * 10**4 + steps + 1
+    keep = np.zeros(len(rows), dtype=bool)
+    for kind in np.unique(steps):
+        segments = np.unique(segment[steps == kind])
+        chosen = rng.choice(segments, max(1, round(fraction * len(segments))), replace=False)
+        keep |= np.isin(segment, chosen)
+    return rows[keep]
+
+
+def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
     """Fit on (x, y) and score the named target windows: ({name: scores}, details).
 
     `targets` maps a name to (windows, labels). With `select`, a network keeps for each
     target the epoch where that target's own loss was lowest, so only validation people may
     be passed that way. Without it every target is scored after the last epoch.
+
+    `keypoints` are windows without labels from the same people as x. The temporal CNN first
+    learns to rebuild them when its settings ask for pretraining.
     """
     frames = options["frames"]
     for i, channel in enumerate(CHANNELS):
@@ -197,10 +232,31 @@ def _fit_and_score(model, options, seed, x, y, targets, select):
             return windows[:, -frames:]
 
     inputs = prepare(x)
-    axes = tuple(range(inputs.ndim - 1))
-    mean = inputs.astype(np.float64).mean(axis=axes)
-    scale = inputs.astype(np.float64).std(axis=axes)
+    pretraining = model == "cnn" and options["pretrain_epochs"] > 0
+    if pretraining and (keypoints is None or not len(keypoints)):
+        raise ValueError("预训练需要训练者的关键点窗口")
+    # With pretraining the scaling also comes from all the keypoint windows, labelled or not.
+    basis = prepare(keypoints) if pretraining else inputs
+    axes = tuple(range(basis.ndim - 1))
+    mean = basis.astype(np.float64).mean(axis=axes)
+    scale = basis.astype(np.float64).std(axis=axes)
     scale = np.where(scale < 1e-6, 1.0, scale)
+    rebuilt = None
+    if pretraining:
+        rebuilt = nets.pretrain(
+            network,
+            _normalize(basis, mean, scale),
+            epochs=options["pretrain_epochs"],
+            mask=options["mask"],
+            learning_rate=options["learning_rate"],
+            batch_size=options["batch_size"],
+            seed=seed,
+        )
+        rebuilt = {
+            "windows": rebuilt["windows"],
+            "first_masked_error": rebuilt["history"][0]["masked_error"],
+            "last_masked_error": rebuilt["history"][-1]["masked_error"],
+        }
     prepared = {
         name: (_normalize(prepare(windows), mean, scale), labels)
         for name, (windows, labels) in targets.items()
@@ -222,7 +278,8 @@ def _fit_and_score(model, options, seed, x, y, targets, select):
         if select:
             network.load_state_dict(states[name], strict=True)
         scores[name] = nets.predict(network, values)
-    return scores, {key: details[key] for key in ("epochs", "selected_epoch", "parameters")}
+    kept = {key: details[key] for key in ("epochs", "selected_epoch", "parameters")}
+    return scores, {**kept, "pretraining": rebuilt}
 
 
 def _breakdown(pool, indices, predicted):
@@ -321,9 +378,18 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
         if candidate["options"]["frames"] > pool.frames:
             raise ValueError(f"设置「{candidate['name']}」的 frames 不能超过 {pool.frames}")
 
-    def training(excluded, stride):
-        rows = np.concatenate([index[person] for person in people if person not in excluded])
-        return np.sort(rows)[::stride]
+    def training(excluded, options):
+        """Labelled rows to fit on and, for pretraining, the same people's keypoint windows."""
+        chosen = [person for person in people if person not in excluded]
+        rows = np.sort(np.concatenate([index[person] for person in chosen]))
+        keypoints = None
+        if options.get("pretrain_epochs"):
+            # Every complete window of these people, labelled or not: labels are not used.
+            spare = pool.spare_last[np.isin(pool.spare_participants, chosen)]
+            ends = np.sort(np.concatenate((pool.last[rows], spare)))
+            keypoints = pool.gather(ends[:: options["stride"]])
+        rows = _label_subset(pool, rows, options["label_fraction"], seed)
+        return rows[:: options["stride"]], keypoints
 
     def target(person):
         return pool.windows(index[person]), pool.y[index[person]]
@@ -337,7 +403,7 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
         options, results = candidate["options"], {}
         for a, b in runs:
             started = time.perf_counter()
-            rows = training((a, b), options["stride"])
+            rows, keypoints = training((a, b), options)
             scores, details = _fit_and_score(
                 model,
                 options,
@@ -346,6 +412,7 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
                 pool.y[rows],
                 {a: target(a), b: target(b)},
                 select=True,
+                keypoints=keypoints,
             )
             for validation, held_out in ((a, b), (b, a)):
                 results[(held_out, validation)] = {
@@ -403,6 +470,7 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
                 "name": candidate["name"],
                 "options": candidate["options"],
                 "parameters": details.get("parameters"),
+                "pretraining": details.get("pretraining"),
                 "validation": _average(list(results.values())),
                 "selected_for": [person for person in people if selected[person] == number],
                 "fits": list(results.values()),
@@ -426,7 +494,7 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
         if all(value is not None for value in epochs):
             # No validation person is left to stop on, so use what the fold's validation chose.
             options["epochs"] = max(1, round(float(np.mean(epochs))))
-        rows = training((held_out,), options["stride"])
+        rows, keypoints = training((held_out,), options)
         scores, _ = _fit_and_score(
             model,
             options,
@@ -435,6 +503,7 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
             pool.y[rows],
             {held_out: target(held_out)},
             select=False,
+            keypoints=keypoints,
         )
         folds.append(
             {
@@ -495,8 +564,17 @@ def markdown(report):
     lines.append(_scores_row("产品现有的固定规则（参考）", report["fixed_rules_validation"], "–"))
     lines += ["", "设置内容："]
     for candidate in report["candidates"]:
-        options = "，".join(f"{key}={value}" for key, value in candidate["options"].items())
+        shown = dict(candidate["options"])
+        if not shown.get("pretrain_epochs"):
+            shown.pop("mask", None)  # Only used by pretraining.
+        options = "，".join(f"{key}={value}" for key, value in shown.items())
         size = f"；{candidate['parameters']} 个参数" if candidate["parameters"] else ""
+        rebuilt = candidate.get("pretraining")
+        if rebuilt:
+            size += (
+                f"；预训练用了 {rebuilt['windows']} 个窗口，遮住部分的重建误差从 "
+                f"{rebuilt['first_masked_error']:.3f} 降到 {rebuilt['last_masked_error']:.3f}"
+            )
         lines.append(f"- {candidate['name']}：{options}{size}")
     rounds = sorted({n for c in report["candidates"] for n in c["validation"]["rounds"]}, key=int)
     if rounds:

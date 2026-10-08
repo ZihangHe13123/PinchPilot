@@ -8,7 +8,7 @@ import hashlib
 import json
 import tempfile
 import zipfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +28,7 @@ from .contact_data import (
     rule_contacts,
 )
 
-POOL_SCHEMA = "pinchpilot-contact-pool-v1"
+POOL_SCHEMA = "pinchpilot-contact-pool-v2"
 PROTOCOL_SCHEMA = "pinchpilot-contact-protocol-v1"
 MEMBER_SUFFIXES = (".jsonl", ".labels.json", ".protocol.json")
 
@@ -47,14 +47,21 @@ class ContactPool:
     steps: np.ndarray  # [N] index into metadata["step_names"], -1 when unknown
     metadata: dict
     frames: int
+    # Complete windows whose final frame has no usable label: keypoints without an answer.
+    spare_last: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
+    spare_participants: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=str))
 
     def __len__(self):
         return len(self.last)
 
-    def windows(self, indices):
-        """[len(indices), frames, 67] windows, oldest frame first."""
-        rows = self.last[np.asarray(indices, dtype=np.int64)]
+    def gather(self, rows):
+        """[len(rows), frames, 67] windows ending on these feature rows, oldest frame first."""
+        rows = np.asarray(rows, dtype=np.int64)
         return self.features[rows[:, None] + np.arange(1 - self.frames, 1)]
+
+    def windows(self, indices):
+        """The labelled windows with these indices."""
+        return self.gather(self.last[np.asarray(indices, dtype=np.int64)])
 
 
 def _member(archive, suffix):
@@ -157,7 +164,7 @@ def _schedule(protocol):
 
 def _build(entries, source, config, allow_draft):
     columns = {key: [] for key in ("last", "y", "rules", "participants", "recordings")}
-    columns.update(rounds=[], steps=[])
+    columns.update(rounds=[], steps=[], spare_last=[], spare_participants=[])
     features, recordings, step_names = [], [], []
     seen, episodes, contents, sources, unreviewed = {}, set(), set(), set(), []
     skipped = {"unknown_label": 0, "warming_or_invalid": 0}
@@ -203,6 +210,8 @@ def _build(entries, source, config, allow_draft):
                 continue
             if (labels[index] < 0).any():
                 skipped["unknown_label"] += 1
+                columns["spare_last"].append(len(features) - 1)
+                columns["spare_participants"].append(meta["participant"])
                 continue
             round_number, step = 0, -1
             if schedule is not None:
@@ -275,10 +284,13 @@ def _build(entries, source, config, allow_draft):
         np.asarray(columns["steps"], dtype=np.int16),
         metadata,
         config.frames,
+        np.asarray(columns["spare_last"], dtype=np.int64),
+        np.asarray(columns["spare_participants"], dtype=str),
     )
 
 
 ARRAYS = ("features", "last", "y", "rules", "participants", "recordings", "rounds", "steps")
+SPARE = ("spare_last", "spare_participants")
 
 
 def load_contact_pool(source, *, config=None, allow_draft=False, cache=None):
@@ -298,7 +310,8 @@ def load_contact_pool(source, *, config=None, allow_draft=False, cache=None):
                 metadata = json.loads(str(saved["metadata"]))
                 if metadata.get("fingerprint") == key:
                     arrays = [saved[name] for name in ARRAYS]
-                    return ContactPool(*arrays, metadata, config.frames)
+                    spare = [saved[name] for name in SPARE]
+                    return ContactPool(*arrays, metadata, config.frames, *spare)
         except (OSError, ValueError, KeyError):
             pass  # An unreadable cache is rebuilt below.
     pool = _build(entries, source, config, allow_draft)
@@ -308,7 +321,7 @@ def load_contact_pool(source, *, config=None, allow_draft=False, cache=None):
         np.savez_compressed(
             target,
             metadata=json.dumps(pool.metadata, ensure_ascii=False),
-            **{name: getattr(pool, name) for name in ARRAYS},
+            **{name: getattr(pool, name) for name in ARRAYS + SPARE},
         )
     return pool
 
@@ -329,6 +342,7 @@ def summary(pool):
         "source": pool.metadata["source"],
         "labels": pool.metadata["labels"],
         "windows": len(pool),
+        "unlabelled_windows": len(pool.spare_last),
         "participants": dict(sorted(people.items())),
         "recordings": pool.metadata["recordings"],
         "skipped": pool.metadata["skipped"],

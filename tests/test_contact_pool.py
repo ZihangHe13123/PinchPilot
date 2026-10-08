@@ -104,6 +104,25 @@ def test_pool_windows_match_the_window_builder_and_carry_person_round_and_step(t
     report = summary(pool)
     assert report["windows"] == len(pool) and len(report["participants"]) == 3
     assert report["participants"]["synthetic_P01"]["positive_windows"]["ring"] > 0
+    assert report["unlabelled_windows"] == 0 and len(pool.spare_last) == 0
+
+
+def test_windows_without_a_label_are_kept_apart_as_keypoints_only(tmp_path):
+    create_synthetic_contact_pool(tmp_path, participants=2, sessions=1)
+    whole = load_contact_pool(tmp_path)
+    labels = tmp_path / "synthetic_P02" / "synthetic_P02_s1.labels.json"
+    spec = json.loads(labels.read_text(encoding="utf-8"))
+    spec["intervals"][3]["index"] = None  # 24 frames whose index label is unknown.
+    labels.write_text(json.dumps(spec), encoding="utf-8")
+    pool = load_contact_pool(tmp_path)
+    assert len(pool.spare_last) == 24 and len(pool) == len(whole) - 24
+    assert set(pool.spare_participants.tolist()) == {"synthetic_P02"}
+    assert summary(pool)["unlabelled_windows"] == 24
+    # They are the same complete windows as before, only without an answer.
+    missing = sorted(set(whole.last.tolist()) - set(pool.last.tolist()))
+    assert missing == sorted(pool.spare_last.tolist())
+    assert pool.gather(pool.spare_last).shape == (24, 8, 67)
+    assert np.array_equal(pool.gather(pool.last[:5]), pool.windows(np.arange(5)))
 
 
 def test_unreviewed_drafts_need_the_draft_switch_and_mark_the_pool(tmp_path):
@@ -183,7 +202,7 @@ def test_cache_is_reused_until_an_input_changes(tmp_path, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(contact_pool, "_build", refuse)
         cached = load_contact_pool(data, allow_draft=True, cache=cache)
-    for name in contact_pool.ARRAYS:
+    for name in contact_pool.ARRAYS + contact_pool.SPARE:
         assert np.array_equal(getattr(cached, name), getattr(built, name))
     assert cached.metadata == built.metadata and cached.frames == built.frames
 

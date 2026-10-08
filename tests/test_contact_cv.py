@@ -25,9 +25,10 @@ def spec(model="forest", *candidates, **extra):
     }
 
 
-def fake_pool(people=PEOPLE, count=96, seed=5, labels="reviewed", source="camera"):
+def fake_pool(people=PEOPLE, count=96, seed=5, labels="reviewed", source="camera", spare=24):
     """Separable windows. Feature 0 carries the person's number so that a spy can tell
-    whose windows it was given; the three distance features carry the labels."""
+    whose windows it was given; the three distance features carry the labels. Each person
+    has four rounds of two steps, and `spare` further windows without labels."""
     rng = np.random.default_rng(seed)
     frames, total = 8, len(people) * count
     combinations = np.array(
@@ -42,15 +43,17 @@ def fake_pool(people=PEOPLE, count=96, seed=5, labels="reviewed", source="camera
         features[mine, :, 0] = number
         # Touching is a small distance, and every person sits at a slightly different scale.
         features[mine, :, 63:66] += np.where(y[mine, None, :] == 1, 0.1, 0.6) * (1 + 0.1 * number)
+    extra = rng.normal(0, 0.05, (len(people) * spare, frames, FEATURE_COUNT)).astype(np.float32)
+    extra[:, :, 0] = np.repeat(np.arange(len(people)), spare)[:, None]
     return ContactPool(
-        features.reshape(total * frames, FEATURE_COUNT),
+        np.concatenate((features, extra)).reshape(-1, FEATURE_COUNT),
         np.arange(total) * frames + frames - 1,
         y,
         y.copy(),
         participants,
         np.repeat(np.arange(len(people), dtype=np.int32), count),
-        np.tile(np.repeat(np.array([1, 2], dtype=np.int8), count // 2), len(people)),
-        np.tile(np.repeat(np.array([0, 1], dtype=np.int16), count // 2), len(people)),
+        np.tile(np.repeat(np.array([1, 2, 3, 4], dtype=np.int8), count // 4), len(people)),
+        np.tile(np.repeat(np.array([0, 1], dtype=np.int16), count // 8), len(people) * 4),
         {
             "source": source,
             "labels": labels,
@@ -61,6 +64,8 @@ def fake_pool(people=PEOPLE, count=96, seed=5, labels="reviewed", source="camera
             "fingerprint": "f" * 64,
         },
         frames,
+        (total + np.arange(len(people) * spare)) * frames + frames - 1,
+        np.repeat(np.array(people), spare),
     )
 
 
@@ -95,6 +100,14 @@ def test_settings_fill_defaults_and_name_what_is_wrong():
         check_settings(spec("svm"))
     with pytest.raises(ValueError, match="不认识的项：epochs"):
         check_settings(spec("cnn", epochs=3))
+    # Pretraining belongs to the temporal CNN; the label share can be cut for every model.
+    with pytest.raises(ValueError, match="不认识的项 pretrain_epochs"):
+        check_settings(spec("finger_cnn", {"name": "a", "pretrain_epochs": 5}))
+    for bad in ({"mask": 0.95}, {"pretrain_epochs": -1}, {"label_fraction": 0}):
+        with pytest.raises(ValueError, match="取值无效"):
+            check_settings(spec("cnn", {"name": "a", **bad}))
+    for model in contact_cv.DEFAULTS:
+        assert check_settings(spec(model, {"name": "a", "label_fraction": 0.25}))
     with pytest.raises(ValueError, match="schema"):
         check_settings({"model": "forest", "candidates": [{"name": "a"}]})
     assert check_settings(spec("cnn", {"name": "a", "positive_weight": "balanced"}))
@@ -109,6 +122,8 @@ def test_shipped_settings_files_are_valid_and_cover_the_two_finger_cnn_controls(
         for item in models["finger_cnn"]["candidates"]
     }
     assert {(True, True), (False, True), (True, False)} <= switches
+    pretrained = [item["options"]["pretrain_epochs"] for item in models["cnn"]["candidates"]]
+    assert 0 in pretrained and max(pretrained) > 0  # The same CNN with and without it.
 
 
 def test_best_threshold_is_the_exact_f1_optimum():
@@ -132,7 +147,8 @@ def test_tuning_never_fits_or_selects_with_a_folds_held_out_person(monkeypatch):
     calls = []
     real = contact_cv._fit_and_score
 
-    def spy(model, options, seed, x, y, targets, select):
+    def spy(model, options, seed, x, y, targets, select, keypoints=None):
+        assert keypoints is None  # Nothing asked for pretraining here.
         calls.append((owners(x), set(targets), select))
         return real(model, options, seed, x, y, targets, select)
 
@@ -159,7 +175,7 @@ def test_each_fold_selects_by_its_own_validation_and_tests_once_with_that_choice
     wrong = {"x": {"P01": 0.0, "P02": 0.4, "P03": 0.4}, "y": {"P01": 0.4, "P02": 0.1, "P03": 0.1}}
     calls = []
 
-    def fake(model, options, seed, x, y, targets, select):
+    def fake(model, options, seed, x, y, targets, select, keypoints=None):
         name = "x" if options["frames"] == 1 else "y"
         calls.append((name, owners(x), set(targets), select, options["epochs"]))
         scores = {}
@@ -206,6 +222,122 @@ def test_each_fold_selects_by_its_own_validation_and_tests_once_with_that_choice
     assert report["test"]["macro_f1"] == pytest.approx(np.mean([f["macro_f1"] for f in folds]))
 
 
+def test_pretraining_sees_keypoints_of_the_fitted_people_only_labelled_or_not(monkeypatch):
+    pool = fake_pool()
+    calls = []
+
+    def fake(model, options, seed, x, y, targets, select, keypoints=None):
+        calls.append((options["pretrain_epochs"], owners(x), keypoints, set(targets), select))
+        scores = {person: labels.astype(np.float32) for person, (_, labels) in targets.items()}
+        return scores, {"selected_epoch": dict.fromkeys(targets, 3)}
+
+    monkeypatch.setattr(contact_cv, "_fit_and_score", fake)
+    settings = check_settings(
+        spec(
+            "cnn",
+            {"name": "无预训练", "stride": 1},
+            {"name": "预训练", "stride": 1, "pretrain_epochs": 4},
+        )
+    )
+    run_cv(pool, settings, final_test=True)
+    assert all(keypoints is None for epochs, _, keypoints, _, _ in calls if not epochs)
+    with_keypoints = [call for call in calls if call[0]]
+    assert len(with_keypoints) >= 3
+    for _, fitted, keypoints, scored, select in with_keypoints:
+        assert owners(keypoints) == fitted and not fitted & scored
+        # 96 labelled and 24 unlabelled windows for each person fitted on.
+        assert len(keypoints) == 120 * len(fitted)
+
+
+def test_label_fraction_keeps_whole_segments_of_every_kind_of_step():
+    pool = fake_pool()
+    rows = np.flatnonzero(np.isin(pool.participants, ("P01", "P03")))
+    assert np.array_equal(contact_cv._label_subset(pool, rows, 1.0, 1), rows)
+    half = contact_cv._label_subset(pool, rows, 0.5, 1)
+    assert len(half) == len(rows) // 2 and set(half) <= set(rows)
+    assert np.array_equal(half, contact_cv._label_subset(pool, rows, 0.5, 1))
+
+    def segments(chosen):
+        return {(pool.recordings[i], pool.rounds[i], pool.steps[i]): 0 for i in chosen}.keys()
+
+    kept = segments(half)
+    # Twelve windows per segment: a segment is kept whole or not at all.
+    assert len(kept) * 12 == len(half)
+    # Each person has four segments of each of the two steps; half of each kind stays.
+    assert sorted(step for _, _, step in kept) == [0] * 4 + [1] * 4
+    tiny = contact_cv._label_subset(pool, rows, 0.01, 1)
+    assert sorted({pool.steps[i] for i in tiny}) == [0, 1]  # Never drops a kind of step.
+    assert any(
+        set(contact_cv._label_subset(pool, rows, 0.5, seed)) != set(half) for seed in range(2, 8)
+    )
+    report = run_cv(
+        pool, check_settings(spec("rules", {"name": "一半标签", "label_fraction": 0.5}))
+    )
+    assert {fit["training_windows"] for fit in report["candidates"][0]["fits"]} == {48}
+
+
+def test_pretraining_learns_to_rebuild_blanked_keypoints_without_touching_the_head():
+    torch = pytest.importorskip("torch")
+    from pinchpilot import contact_nets as nets
+
+    rng = np.random.default_rng(0)
+    # Windows with structure: a few hidden factors that drift over the eight frames.
+    factors = np.cumsum(rng.normal(0, 0.3, (3000, 8, 6)), axis=1)
+    x = factors @ rng.normal(0, 1, (6, FEATURE_COUNT)) + rng.normal(0, 0.1, (3000, 8, 67))
+    x = ((x - x.mean(axis=(0, 1))) / x.std(axis=(0, 1))).astype(np.float32)
+    settings = dict(epochs=5, mask=0.3, learning_rate=0.002, batch_size=128, seed=2)
+    network = nets.temporal_cnn(8, 32, seed=2)
+    before = {key: value.clone() for key, value in network.state_dict().items()}
+    details = nets.pretrain(network, x, **settings)
+    errors = [row["masked_error"] for row in details["history"]]
+    assert details["windows"] == 3000 and len(errors) == 5
+    assert errors[-1] < 0.5 * errors[0]  # A blanked value is no longer guessed as the mean.
+    after = network.state_dict()
+    assert not torch.equal(before["conv1.weight"], after["conv1.weight"])
+    assert not torch.equal(before["conv2.weight"], after["conv2.weight"])
+    assert torch.equal(before["head.weight"], after["head.weight"])
+    again = nets.temporal_cnn(8, 32, seed=2)
+    nets.pretrain(again, x, **settings)
+    assert torch.equal(again.state_dict()["conv1.weight"], after["conv1.weight"])
+    other = nets.temporal_cnn(8, 32, seed=2)
+    nets.pretrain(other, x, **{**settings, "mask": 0.6})
+    assert not torch.equal(other.state_dict()["conv1.weight"], after["conv1.weight"])
+
+    # What is blanked is really hidden from the network. Here every frame's interval feature
+    # is independent noise and everything else is zero, so a blanked value cannot be worked
+    # out from what is left. A network that still saw it would simply copy it.
+    noise = np.zeros((3000, 8, FEATURE_COUNT), dtype=np.float32)
+    noise[:, :, 66] = rng.normal(0, 1, (3000, 8))
+    hidden = nets.pretrain(
+        nets.temporal_cnn(8, 32, seed=2),
+        noise,
+        **{**settings, "epochs": 12, "learning_rate": 0.005},
+    )
+    # The error is averaged over all blanked values; only 1 in 67 of them is not zero.
+    assert hidden["history"][-1]["masked_error"] * FEATURE_COUNT > 0.9
+
+
+def test_pretrained_cnn_runs_the_whole_protocol_and_reports_the_reconstruction():
+    pytest.importorskip("torch")
+    base = {"channels": 8, "epochs": 12, "learning_rate": 0.01, "batch_size": 16, "stride": 1}
+    settings = check_settings(
+        spec("cnn", {"name": "无预训练", **base}, {"name": "预训练", **base, "pretrain_epochs": 3})
+    )
+    report = run_cv(fake_pool(), settings, final_test=True)
+    plain, pretrained = report["candidates"]
+    assert plain["pretraining"] is None
+    assert pretrained["pretraining"]["windows"] == 120  # One person: 96 labelled + 24 not.
+    assert np.isfinite(pretrained["pretraining"]["last_masked_error"])
+    assert pretrained["options"]["pretrain_epochs"] == 3
+    # Same seed and data: any difference in the scores comes from the pretraining.
+    assert plain["validation"]["macro_f1"] != pretrained["validation"]["macro_f1"]
+    assert pretrained["validation"]["macro_f1"] > 0.8
+    json.dumps(report, allow_nan=False)
+    text = markdown(report)
+    assert "预训练用了 120 个窗口，遮住部分的重建误差从" in text
+    assert text.count("mask=") == 1  # Shown only where pretraining is on.
+
+
 @pytest.mark.parametrize(
     "change, message",
     [
@@ -239,7 +371,7 @@ def test_rules_and_forest_learn_the_separable_fixture_and_reports_are_plain_json
         assert report["candidates"][0]["validation"]["macro_f1"] > 0.95
         assert report["test"]["macro_f1"] > 0.95 and len(report["test"]["folds"]) == 3
         assert report["fixed_rules_validation"]["macro_f1"] == 1.0  # The fixture's rules are y.
-        assert set(report["candidates"][0]["validation"]["rounds"]) == {"1", "2"}
+        assert set(report["candidates"][0]["validation"]["rounds"]) == {"1", "2", "3", "4"}
         text = write_report(report, settings, tmp_path / model)
         saved = json.loads((tmp_path / model / "report.json").read_text(encoding="utf-8"))
         assert saved == json.loads(json.dumps(report)) and saved["threshold"] == 0.5
@@ -342,7 +474,7 @@ def test_networks_run_the_whole_protocol(model):
             {
                 "name": "小",
                 "channels": 8,
-                "epochs": 6,
+                "epochs": 12,
                 "learning_rate": 0.01,
                 "batch_size": 16,
                 "stride": 1,
@@ -353,7 +485,7 @@ def test_networks_run_the_whole_protocol(model):
     candidate = report["candidates"][0]
     assert candidate["parameters"] > 0 and candidate["validation"]["macro_f1"] > 0.8
     epochs = [fit["selected_epoch"] for fit in candidate["fits"]]
-    assert len(epochs) == 6 and all(1 <= value <= 6 for value in epochs)
+    assert len(epochs) == 6 and all(1 <= value <= 12 for value in epochs)
     for fold in report["test"]["folds"]:
         chosen = [
             f["selected_epoch"] for f in candidate["fits"] if f["held_out"] == fold["held_out"]

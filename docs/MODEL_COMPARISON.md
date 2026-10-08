@@ -37,12 +37,15 @@ uv run pinchpilot ml-cv C:\Projects\PinchPilot-data\recordings --settings experi
 |---|---|---|
 | `frames` | 用最近几帧，1 到 8 | 全部 |
 | `stride` | 训练时每几个窗口取一个；相邻窗口很像，取大一些训练更快 | 全部 |
+| `label_fraction` | 只用这一比例的标签训练，例如 0.1；按整段动作抽取。用来比较标签少时谁更稳 | 全部 |
 | `statistic` | 对最近几帧的距离取什么：`last`、`median`、`mean`、`min` | 规则 |
 | `trees`、`depth`、`min_leaf` | 树的数量、树的深度、叶子最少样本数 | 随机森林 |
 | `channels` | 网络的宽度 | 两个 CNN |
 | `epochs` | 最多训练几轮；程序会自动停在验证效果最好的那一轮 | 两个 CNN |
 | `learning_rate`、`batch_size`、`weight_decay` | 学习率、每批样本数、权重衰减 | 两个 CNN |
 | `positive_weight` | 接触样本的权重；填 `"balanced"` 按比例自动加权 | 两个 CNN |
+| `pretrain_epochs` | 大于 0 时先做这么多轮自编码器预训练：遮住一部分关键点，让网络把它们补回来，不用标签 | 时序 CNN |
+| `mask` | 预训练时遮住的比例，默认 0.3 | 时序 CNN |
 | `shared` | 三根手指是否共用一套参数 | 手指共享 CNN |
 | `context` | 每根手指的输出是否参考另外两根手指 | 手指共享 CNN |
 
