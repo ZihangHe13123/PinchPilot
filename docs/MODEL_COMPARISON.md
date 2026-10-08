@@ -25,7 +25,7 @@ uv run pinchpilot ml-cv C:\Projects\PinchPilot-data\recordings --settings experi
 ```
 
 - `--settings` 换成自己模型的文件：`rules.json`、`forest.json`、`cnn.json`、`finger_cnn.json`。
-- `--draft` 表示接受还没检查的草稿标签。标签检查完成后去掉它，程序就只用检查过的标签。**带 `--draft` 跑出来的数字只用来试设置，不能写进报告。**
+- `--draft` 表示接受还没检查的草稿标签。标签检查（见 [标签检查说明](LABEL_REVIEW.md)）完成后去掉它，程序就只用检查过的标签。**带 `--draft` 跑出来的数字只用来试设置，不能写进报告。**
 - 结果直接显示在屏幕上，同时保存到 `reports\contact_cv\模型_时间\`。其中 `report.md` 可以直接贴到 issue 里，`settings.json` 是这次用的设置。
 - 第一次运行要读入全部录制，约 1 分钟；之后只要录制和标签没变就直接用缓存。
 
