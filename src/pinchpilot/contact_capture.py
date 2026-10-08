@@ -31,6 +31,7 @@ from .contact_data import (
 )
 from .contact_demo_view import GestureDemo, caption
 from .domain import HandFrame
+from .widgets import fit_to_screen
 
 STOP_LABELS = {
     "user_stop": "手动停止",
@@ -113,19 +114,19 @@ class ContactCaptureWindow(QWidget):
         self.lock_until = 0.0
         self.last_feed = None
         self.setWindowTitle("PinchPilot · ML 关键点采集")
-        self.resize(*((920, 820) if guided else (560, 480)))
+        fit_to_screen(self, *((920, 820) if guided else (560, 480)))
         self.setMinimumSize(440, 420)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         heading = QLabel("ML 动作采集 · 系统鼠标已暂停")
         heading.setStyleSheet("font-size:18px; font-weight:600;")
         layout.addWidget(heading)
-        scope = QLabel(
+        self.scope_note = QLabel(
             "只保存当前控制手的连续 21 点坐标、时间与左右手分类；无手帧也保留。"
             "不保存图像，不会自动启动相机或训练模型。"
         )
-        scope.setWordWrap(True)
-        layout.addWidget(scope)
+        self.scope_note.setWordWrap(True)
+        layout.addWidget(self.scope_note)
         self.guide_panel = QWidget()
         guide = QVBoxLayout(self.guide_panel)
         guide.setContentsMargins(0, 6, 0, 6)
@@ -163,7 +164,7 @@ class ContactCaptureWindow(QWidget):
         words.addStretch()
         # Beside the words: a hand that acts the clip out at the pace it should be done.
         self.demo = GestureDemo()
-        self.demo.setMinimumSize(300, 310)
+        self.demo.setMinimumSize(230, 240)
         self.demo_caption = QLabel()
         self.demo_caption.setWordWrap(True)
         self.demo_caption.setStyleSheet("color:#9fb4c4;")
@@ -220,7 +221,7 @@ class ContactCaptureWindow(QWidget):
         self.output_label.setTextFormat(Qt.TextFormat.PlainText)
         self.output_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.output_label)
-        annotation_note = QLabel(
+        self.annotation_note = annotation_note = QLabel(
             "停止后会生成标签文件：按提示录制时是来自提示和空格键的草稿，否则是空白模板。"
             "两种都需要人工复核后才能训练，动作提示和程序的判断不能直接作为正确答案。"
             "只保存点击开始之后的画面关键点。关闭后需手动重新启用系统鼠标。"
@@ -628,6 +629,9 @@ class ContactCaptureWindow(QWidget):
     def _refresh_guide(self, now, fresh):
         self.guide_panel.setVisible(self.guided_box.isChecked())
         session = self.guided_active
+        # During a session the general explanations make room for the prompt and the hand.
+        for item in (self.scope_note, self.annotation_note):
+            item.setVisible(not session)
         for item in (
             self.step_bar,
             self.guide_status,

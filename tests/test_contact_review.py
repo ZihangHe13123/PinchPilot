@@ -514,6 +514,33 @@ def test_window_lists_ones_own_recordings_first_and_opens_one_that_needs_review(
     window.close()
 
 
+def test_windows_open_inside_the_screen_and_can_shrink_to_a_small_laptop(application, folder):
+    available = application.primaryScreen().availableGeometry()
+    window = ReviewWindow(folder, "P01")
+    window.timer.stop()
+    assert window.width() <= available.width() - 40
+    assert window.height() <= available.height() - 60
+    # A 1080p laptop at 150% scaling leaves about 1280 x 680 for a window.
+    smallest = window.minimumSizeHint()
+    assert smallest.width() <= 1240 and smallest.height() <= 620
+    window.close()
+    capture = ContactCaptureWindow(folder.parent / "capture", guided=True)
+    capture.timer.stop()
+    assert capture.height() <= available.height() - 60
+    capture.clock = lambda: 5.0
+    capture.show()
+    capture.feed(synthetic_tripod(5.0), 5.0)
+    capture.consent.setChecked(True)
+    capture.start_recording()
+    application.processEvents()
+    # During a session the long explanations step aside for the prompt and the example hand.
+    assert capture.scope_note.isHidden() and capture.annotation_note.isHidden()
+    assert capture.minimumSizeHint().height() <= 640
+    capture.stop_recording()
+    assert not capture.scope_note.isHidden()
+    capture.close()
+
+
 def test_review_command_opens_and_closes(application, folder, capsys):
     archive = next(folder.rglob("*.zip"))
     assert main(["ml-review", str(archive), "--annotator", "P01", "--smoke-seconds", "0.2"]) == 0

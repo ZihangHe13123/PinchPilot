@@ -22,7 +22,7 @@ from . import contact_protocol, contact_review
 from .app import STYLE
 from .contact_data import CHANNELS
 from .contact_review import ACCEPTED, AGREE, DISAGREE, DISCARDED, Margins
-from .widgets import CONNECTIONS
+from .widgets import CONNECTIONS, fit_to_screen
 
 LANES = ("中指", "食指", "无名指")
 TIPS = (12, 8, 16)  # fingertip joints in the order of CHANNELS
@@ -51,7 +51,7 @@ class Timeline(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(560, 330)
+        self.setMinimumSize(420, 230)
         self.session = self.labels = self.unit = None
         self.spans, self.scale, self.playhead = [], np.ones(3), 0.0
 
@@ -191,7 +191,7 @@ class HandView(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(300, 300)
+        self.setMinimumSize(200, 200)
         self.frame, self.box, self.row = None, (0.5, 0.5, 0.5), (-1, -1, -1)
 
     def show_hand(self, frame, box, row):
@@ -280,7 +280,7 @@ class ReviewWindow(QWidget):
         self.setStyleSheet(STYLE)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setWindowTitle("PinchPilot · 标签检查")
-        self.resize(1180, 800)
+        fit_to_screen(self, 1180, 800)
         self.annotator = annotator.strip()
         self.clock = time.monotonic
         self.session = self.labels = None

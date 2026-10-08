@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from .domain import EngineResult, HandFrame
@@ -32,6 +32,20 @@ CONNECTIONS = [
     (19, 20),
     (17, 0),
 ]
+
+
+def fit_to_screen(window, width, height):
+    """Give a window its preferred size, but never larger than the screen it opens on.
+
+    A 1080p laptop at 150% scaling has only about 680 usable pixels of height; a taller
+    window would open with its lower controls off the screen.
+    """
+    screen = window.screen() or QGuiApplication.primaryScreen()
+    if screen is not None:
+        available = screen.availableGeometry()
+        width = min(width, available.width() - 40)
+        height = min(height, available.height() - 60)
+    window.resize(width, height)
 
 
 def draw_progress(painter, point, progress):
