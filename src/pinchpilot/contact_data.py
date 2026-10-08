@@ -341,20 +341,31 @@ def draft_annotation(recording, output, intervals, protocol):
     return result
 
 
-def _labels(recording, annotation, frames, source):
+def is_protocol_draft(spec):
+    """Unreviewed labels that a guided session wrote from its prompts and the Space key."""
+    return spec.get("reviewed") is False and spec.get("label_source") == "protocol_draft"
+
+
+def _labels(recording, annotation, frames, source, allow_draft=False):
+    """Per-frame labels, -1 where unknown.
+
+    `allow_draft` also accepts a guided session's unreviewed draft. Only trial runs may ask
+    for that; whatever they produce is not a result.
+    """
     spec = _read_json(annotation)
     if spec.get("schema") != ANNOTATION_SCHEMA or spec.get("channels") != list(CHANNELS):
         raise ValueError("三指标注格式或通道不匹配")
     if spec.get("recording_sha256") != _sha(recording):
         raise ValueError("录制文件SHA256已改变，不能沿用旧标注")
-    if spec.get("reviewed") is not True:
+    draft = allow_draft and is_protocol_draft(spec)
+    if spec.get("reviewed") is not True and not draft:
         raise ValueError("需要已复核的接触标注；提示任务和规则输出不是真值")
     if source == "legacy_unspecified":
         source = spec.get("recording_source")
     if source not in ("camera", "synthetic") or spec.get("recording_source") != source:
         raise ValueError("标注与录制来源不匹配")
     expected = "synthetic_fixture" if source == "synthetic" else "human_reviewed"
-    if (
+    if not draft and (
         spec.get("label_source") != expected
         or not isinstance(spec.get("annotator"), str)
         or not spec["annotator"].strip()
@@ -579,3 +590,87 @@ def create_synthetic_contact_dataset(directory, seed=20260922):
     target = directory / "manifest.json"
     save_json(target, manifest)
     return target
+
+
+def create_synthetic_contact_pool(
+    directory, participants=3, sessions=2, seed=20260922, segment_frames=24
+):
+    """Several synthetic people with several sessions each, laid out like team recordings.
+
+    For checking the cross-validation code only. Labels come from generator parameters.
+    """
+    from .tripod_demo import synthetic_tripod
+
+    if type(seed) is not int or not 0 <= seed < 2**32:
+        raise ValueError("seed需要为[0,2**32)整数")
+    if not 1 <= participants <= 20 or not 1 <= sessions <= 10:
+        raise ValueError("合成样例的人数或场次数无效")
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    if any(directory.iterdir()):
+        raise ValueError("合成样例需要空目录，以免覆盖数据")
+    rng = np.random.default_rng(seed)
+    for person in range(1, participants + 1):
+        name = f"synthetic_P{person:02d}"
+        for session in range(1, sessions + 1):
+            path = directory / name / f"{name}_s{session}.jsonl"
+            recorder = ContactRecorder(
+                path,
+                name,
+                f"synthetic-session-{session}",
+                source="synthetic",
+                episode=f"synthetic-pool-{seed}-{person}-{session}",
+            )
+            intervals, steps, index = [], [], 0
+            try:
+                for round_number in (1, 2):
+                    for flags in product((0, 1), repeat=3):
+                        start = index
+                        # Each segment has its own gap sizes, so a threshold has to be learned.
+                        contact = rng.uniform(0.06, 0.16) if flags[1] else rng.uniform(0.45, 0.9)
+                        right = rng.uniform(0.06, 0.16) if flags[2] else rng.uniform(0.45, 0.9)
+                        for _ in range(segment_frames):
+                            frame = synthetic_tripod(
+                                100 + index / 30,
+                                grip=bool(flags[0]),
+                                contact=contact,
+                                right_contact=right,
+                                noise=tuple(rng.normal(0, 0.0007, 2)),
+                            )
+                            points = np.asarray(frame.landmarks)
+                            points[:, :2] = (points[:, :2] - 0.5) * (0.85 + person * 0.05) + 0.5
+                            recorder.add(replace(frame, landmarks=tuple(map(tuple, points))))
+                            index += 1
+                        intervals.append(
+                            {"start": start, "end": index, **dict(zip(CHANNELS, flags))}
+                        )
+                        steps.append(
+                            {
+                                "start": start / 30,
+                                "end": index / 30,
+                                "round": round_number,
+                                "name": "synthetic_" + "".join(map(str, flags)),
+                            }
+                        )
+            finally:
+                recorder.close()
+            labels = path.with_suffix(".labels.json")
+            annotation_template(path, labels)
+            annotated = _read_json(labels)
+            annotated.update(
+                reviewed=True,
+                label_source="synthetic_fixture",
+                annotator="deterministic-generator",
+                intervals=intervals,
+            )
+            save_json(labels, annotated)
+            save_json(
+                path.with_suffix(".protocol.json"),
+                {
+                    "schema": "pinchpilot-contact-protocol-v1",
+                    "protocol": "synthetic",
+                    "clock_start": 100.0,
+                    "steps": steps,
+                },
+            )
+    return directory

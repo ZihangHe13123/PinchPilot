@@ -151,26 +151,43 @@ def _torch():
     try:
         import torch
     except ImportError as error:
-        raise RuntimeError("CNN 需要可选依赖 torch；请安装项目的 ml extra") from error
+        raise RuntimeError(
+            "CNN 需要可选依赖 torch；请把命令开头改成 uv run --extra ml pinchpilot"
+        ) from error
     return torch
 
 
-def _make_cnn(frames, seed=0):
+def _last_output(x, conv1, conv2):
+    """What two causal convolutions (zeros before the oldest frame) give at the last frame.
+
+    x is [N, T, features]; conv1 has kernel 3 and conv2 kernel max(1, T - 2). The last
+    output needs conv1 only at its final positions, so both layers are computed as matrix
+    products over the same weights, which is many times faster on a CPU than Conv1d.
+    """
+    torch = _torch()
+    count, kernel = x.shape[0], conv2.kernel_size[0]
+    missing = kernel + 2 - x.shape[1]
+    if missing > 0:
+        x = torch.nn.functional.pad(x, (0, 0, missing, 0))
+    x = x.unfold(1, 3, 1).reshape(count, kernel, -1)
+    x = torch.relu(torch.nn.functional.linear(x, conv1.weight.flatten(1), conv1.bias))
+    x = x.transpose(1, 2).reshape(count, -1)
+    return torch.relu(torch.nn.functional.linear(x, conv2.weight.flatten(1), conv2.bias))
+
+
+def _make_cnn(frames, seed=0, channels=32):
     torch = _torch()
 
     class CausalContactCNN(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.conv1 = torch.nn.Conv1d(FEATURE_COUNT, 32, 3)
+            self.conv1 = torch.nn.Conv1d(FEATURE_COUNT, channels, 3)
             self.second_kernel = max(1, frames - 2)
-            self.conv2 = torch.nn.Conv1d(32, 32, self.second_kernel)
-            self.head = torch.nn.Linear(32, 3)
+            self.conv2 = torch.nn.Conv1d(channels, channels, self.second_kernel)
+            self.head = torch.nn.Linear(channels, 3)
 
         def forward(self, x):
-            x = x.transpose(1, 2)
-            x = torch.relu(self.conv1(torch.nn.functional.pad(x, (2, 0))))
-            x = torch.relu(self.conv2(torch.nn.functional.pad(x, (self.second_kernel - 1, 0))))
-            return self.head(x[:, :, -1])
+            return self.head(_last_output(x, self.conv1, self.conv2))
 
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)

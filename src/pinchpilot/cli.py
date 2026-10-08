@@ -60,6 +60,7 @@ def parser() -> argparse.ArgumentParser:
     fixture = sub.add_parser("ml-fixture", help="生成明确标记的合成三指标注；仅工程验证")
     fixture.add_argument("--output", type=Path, required=True, help="需要一个空目录")
     fixture.add_argument("--seed", type=int, default=20260922)
+    fixture.add_argument("--pool", action="store_true", help="生成多人多场次样例，供 ml-cv 使用")
     annotate = sub.add_parser("ml-label-template", help="为关键点录制生成未复核的空白接触标注")
     annotate.add_argument("recording", type=Path)
     annotate.add_argument("--output", type=Path, required=True)
@@ -74,6 +75,20 @@ def parser() -> argparse.ArgumentParser:
     contact_train.add_argument(
         "--allow-synthetic", action="store_true", help="只为工程验证训练合成数据"
     )
+    pool = sub.add_parser("ml-pool", help="列出文件夹里的接触录制、标签状态和各人的样本量")
+    pool.add_argument("data", type=Path, help="放录制文件的文件夹，例如数据仓库的 recordings")
+    pool.add_argument("--draft", action="store_true", help="也接受未复核的草稿标签")
+    pool.add_argument("--cache", type=Path, default=Path("data/cache/contact_pool"))
+    cv = sub.add_parser("ml-cv", help="留一人验证比较接触模型；每个模型一个设置文件")
+    cv.add_argument("data", type=Path, help="放录制文件的文件夹，例如数据仓库的 recordings")
+    cv.add_argument("--settings", type=Path, required=True, help="这个模型的设置文件")
+    cv.add_argument("--output", type=Path, help="默认 reports/contact_cv/模型_时间")
+    cv.add_argument(
+        "--draft", action="store_true", help="接受未复核的草稿标签；仅供试跑，数字不能当结果"
+    )
+    cv.add_argument("--allow-synthetic", action="store_true", help="只为工程验证使用合成数据")
+    cv.add_argument("--final-test", action="store_true", help="给留出的人打分；定稿后统一运行一次")
+    cv.add_argument("--cache", type=Path, default=Path("data/cache/contact_pool"))
     shadow = sub.add_parser("ml-shadow", help="离线旁路比较模型与几何规则；只加载可信的本地模型")
     shadow.add_argument("recording", type=Path)
     shadow.add_argument("--model", type=Path, required=True)
@@ -219,12 +234,47 @@ def main(argv=None) -> int:
                 "os_events_sent": False,
             }
         elif args.command == "ml-fixture":
-            from .contact_data import create_synthetic_contact_dataset
+            from .contact_data import (
+                create_synthetic_contact_dataset,
+                create_synthetic_contact_pool,
+            )
 
-            result = {
-                "manifest": str(create_synthetic_contact_dataset(args.output, args.seed)),
-                "source": "synthetic_engineering",
-            }
+            if args.pool:
+                result = {
+                    "pool": str(create_synthetic_contact_pool(args.output, seed=args.seed)),
+                    "source": "synthetic_engineering",
+                }
+            else:
+                result = {
+                    "manifest": str(create_synthetic_contact_dataset(args.output, args.seed)),
+                    "source": "synthetic_engineering",
+                }
+        elif args.command == "ml-pool":
+            from .contact_pool import load_contact_pool, summary
+
+            result = summary(load_contact_pool(args.data, allow_draft=args.draft, cache=args.cache))
+        elif args.command == "ml-cv":
+            from datetime import datetime
+
+            from .contact_cv import read_settings, run_cv, write_report
+            from .contact_pool import load_contact_pool
+
+            settings = read_settings(args.settings)
+            output = args.output or Path("reports/contact_cv") / (
+                f"{settings['model']}_{datetime.now():%Y%m%d_%H%M%S}"
+            )
+            if output.exists() and (not output.is_dir() or any(output.iterdir())):
+                raise ValueError("输出目录已有内容；请换一个新目录")
+            pool = load_contact_pool(args.data, allow_draft=args.draft, cache=args.cache)
+            report = run_cv(
+                pool,
+                settings,
+                final_test=args.final_test,
+                allow_synthetic=args.allow_synthetic,
+                progress=lambda text: print(text, file=sys.stderr, flush=True),
+            )
+            print(write_report(report, settings, output))
+            result = {"output": str(output), "evidence": report["evidence"]}
         elif args.command == "ml-label-template":
             from .contact_data import annotation_template
 

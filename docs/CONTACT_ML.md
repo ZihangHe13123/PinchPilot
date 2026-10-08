@@ -32,7 +32,7 @@ v0.14.0 起默认按屏幕提示录制。组员录制时看一页的 [录制说�
 
 **尚未提供逐帧标注编辑器**。需要人工编辑生成的 `.labels.json`；我也可以按后续确定的人工标签协助整理，但不能用规则输出自动填成“正确答案”。
 
-按提示录制生成的草稿标明 `reviewed: false` 和 `label_source: "protocol_draft"`，只是复核的起点，训练程序拒绝未复核的标注。草稿里中指一路来自屏幕提示，食指和无名指来自空格。没有手的帧、提示出现后0.8秒、提示结束前0.3秒、每次按下或松开空格前后0.07秒都留空；需要空格的步骤如果整步没有收到空格，对应一路在这一步留空。
+按提示录制生成的草稿标明 `reviewed: false` 和 `label_source: "protocol_draft"`，只是复核的起点。`ml-train` 和正式结果拒绝未复核的标注；`ml-cv --draft` 可以用草稿试跑，输出标明草稿，并且不能计算测试结果。草稿里中指一路来自屏幕提示，食指和无名指来自空格。没有手的帧、提示出现后0.8秒、提示结束前0.3秒、每次按下或松开空格前后0.07秒都留空；需要空格的步骤如果整步没有收到空格，对应一路在这一步留空。
 不能可靠判断的区间保留`null`，接触转换的模糊边界也留空。仅有动作提示、按键时间或关键点接近不足以证明实际接触，需结合人工观察/参与者确认，并明确记录不确定范围。
 
 区间使用从0起算的帧号，`start`包含、`end`不包含。三路各为0（未接触）、1（接触）、null（未知）；窗口末帧有任一路未知便不进入本期训练。审核完才将`reviewed`改为true、`label_source`改为`human_reviewed`，填写`annotator`。录制SHA256不得手动忽略或随意替换。
@@ -80,6 +80,32 @@ uv run --extra ml pinchpilot ml-shadow data/contact_recordings/p3.jsonl --model 
 
 `ml-shadow`只在离线录制中记录模型建议、规则观察及本地推理耗时，不输出系统输入、不代表点击成功率。无手或冷启动期间分数为未知。实时桌面旁路、接触起止事件误差、误点击/漏点击、逐帧标注编辑器和真人A/B仍未完成。
 
+## 多人比较：留一人验证
+
+组员使用步骤见 [模型训练与比较说明](MODEL_COMPARISON.md)，这里说明程序做了什么。`ml-train` 仍按清单里写死的 train/validation/test 训练并保存一个模型；多人比较用下面两条命令，不保存模型。
+
+```sh
+uv run pinchpilot ml-pool <录制文件夹> [--draft]
+uv run [--extra ml] pinchpilot ml-cv <录制文件夹> --settings experiments/contact/<模型>.json [--draft] [--final-test]
+```
+
+**数据**：直接读文件夹里按提示录制生成的压缩包，以及散放的 `.jsonl` 加 `.labels.json`。压缩包旁边如有同名的 `<压缩包名>.labels.json`，就用这份复核过的标签代替包内草稿。同一段录制以两种形式出现只算一次；内容相同只是起始时间不同的副本、合成与真人混放都会被拒绝。窗口和特征与 `ml-train` 相同（8帧×67维），另外记下每个窗口属于哪个人、提示记录里的第几轮和哪一步。读入结果按输入文件的哈希缓存到 `data/cache/contact_pool/`。
+
+**划分**：每人轮流作为留出者。对留出者 T，其余每人 V 轮流做验证，用除 T、V 以外的人训练。三个人时每组设置有6次验证（训练3次，每次训练同时给两个人打分，各自归入不含自己的那一折）。调参只输出这些验证分数。CNN 的训练轮数由验证者的损失决定，两个验证者各自保留自己最好的一轮。
+
+**选择与测试**：每一折只按自己的验证结果在候选设置里选一组，所以留出者的数据不参与它那一折的任何选择。`--final-test` 才给留出者打分：用选中的设置在其余所有人上重新训练（CNN 的轮数取该折验证选出的平均值），每个留出者只打一次分。草稿标签不能运行 `--final-test`。
+
+**四种模型**（设置文件里的 `model`）：
+
+- `rules`：每根手指一个距离阈值，在训练者身上取F1最高的切点；可对最近几帧取中位数等统计量。
+- `forest`：三个独立的随机森林，输入是拉平的最近几帧。
+- `cnn`：与 `ml-train` 相同结构的因果卷积网络，宽度可调；32通道时12,739个参数。
+- `finger_cnn`：把输入拆成中指、食指、无名指三份，每份只含拇指4个关节、该手指4个关节、指尖差、该手指的距离比和帧间隔（29维）。三份过同一个两层因果卷积（`shared`），输出前拼上另外两根手指向量的逐元素最大值（`context`）；24通道时5,644个参数。两个开关各自对应一个对照实验。
+
+表里另有一行“产品现有的固定规则”，是 `rule_contacts` 在同样窗口上的分数，仅作参考。
+
+**局限**：判定门槛固定为0.5，分数未校准。相邻窗口高度相关，窗口数不是独立样本数。只有三个人时，每折验证的训练只来自一个人，验证分数会低于最终用两个人训练的模型，适合比较设置，不适合当作最终表现。人工调设置时看到的是所有折的验证分数，这一点留出者的数据间接参与了，报告里要写明。每折选出的设置可能不同，测试表会列出各折实际用的那一组。
+
 ## 无需真人数据的工程检查
 
 ```sh
@@ -88,6 +114,8 @@ uv run pinchpilot ml-inspect data/contact-synthetic/manifest.json
 uv run pinchpilot ml-train data/contact-synthetic/manifest.json --output models/contact-synthetic-rf --model forest --allow-synthetic
 uv run --extra ml pinchpilot ml-train data/contact-synthetic/manifest.json --output models/contact-synthetic-cnn --model cnn --epochs 8 --allow-synthetic
 ```
+
+多人比较的合成样例用 `ml-fixture --pool` 生成（3人×2场次），再用 `ml-cv … --allow-synthetic` 运行。
 
 合成目录需为空，合成训练默认拒绝，必须显式`--allow-synthetic`，报告会标明`synthetic_engineering`。这组样例刻意简单，规则基线很强；模型取得高分不证明可以改善真实摄像头表现。开发测试用`uv run --extra ml pytest -q`；不安装extra时CNN专用测试会跳过。
 

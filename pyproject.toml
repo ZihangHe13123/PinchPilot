@@ -34,7 +34,8 @@ dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
 packages = ["src/pinchpilot"]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["src/pinchpilot", "tests", "scripts", "docs", "README.md", "THIRD_PARTY.md",
+only-include = ["src/pinchpilot", "tests", "scripts", "docs", "experiments", "README.md",
+                "THIRD_PARTY.md",
                 "pyproject.toml", "uv.lock", "requirements.lock", ".python-version", ".gitignore",
                 "launch_mac.command", "launch_windows.cmd", "launch_flex_mac.command",
                 "launch_dwell_mac.command", "launch_flex_windows.cmd", "launch_dwell_windows.cmd",

@@ -1,0 +1,11 @@
+{
+  "schema": "pinchpilot-contact-settings-v1",
+  "model": "rules",
+  "seed": 42,
+  "note": "每个手指一个距离阈值，在训练的人身上选 F1 最高的。frames 和 statistic 决定用最近几帧的哪个统计量。",
+  "candidates": [
+    {"name": "只看当前帧", "frames": 1, "statistic": "last"},
+    {"name": "3 帧中位数", "frames": 3, "statistic": "median"},
+    {"name": "5 帧中位数", "frames": 5, "statistic": "median"}
+  ]
+}

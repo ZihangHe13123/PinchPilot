@@ -34,3 +34,6 @@ jobs:
       - run: uv run python scripts/check_tripod.py
       - run: uv run python scripts/check_motion_tuning.py
       - run: uv build
+      # The CNN tests need PyTorch, which the default install leaves out. Last, because the
+      # steps above would uninstall it again.
+      - run: uv run --extra ml pytest -q tests/test_contact_models.py tests/test_contact_cv.py
