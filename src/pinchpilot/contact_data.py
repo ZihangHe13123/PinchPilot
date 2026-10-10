@@ -73,6 +73,24 @@ def _validate_frame(frame):
             raise ValueError("世界坐标关键点必须随关键点一起出现，且为有限的21×3坐标")
 
 
+def palm_angle(frame):
+    """Degrees between the palm's normal and the camera's viewing direction, or None.
+
+    From MediaPipe's world landmarks, whose axes follow the camera's: near 0 with the palm or
+    the back of the hand square to the camera, 90 with the hand seen edge-on. A relaxed hand
+    held "facing" the camera reads about 25. For describing how a hand was held; features
+    and control do not use it.
+    """
+    if not frame.world_landmarks:
+        return None
+    points = np.asarray(frame.world_landmarks, dtype=float)
+    normal = np.cross(points[5] - points[0], points[17] - points[0])
+    length = float(np.linalg.norm(normal))
+    if length < 1e-9:
+        return None
+    return float(np.degrees(np.arccos(min(1.0, abs(normal[2]) / length))))
+
+
 def contact_features(frame, dt=0.0):
     """Palm-normalized estimated XYZ + 3 distance ratios + actual inter-frame dt."""
     _validate_frame(frame)

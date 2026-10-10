@@ -32,6 +32,10 @@ POSES = (
     "手离镜头近一些或远一些",
     "换成你觉得最放松的姿势",
 )
+# What `contact_data.palm_angle` should read in each round, in degrees, where the round is
+# about how far the hand is turned. A hand held facing the camera reads about 25, not 0.
+# The first sessions recorded without this check were hardly turned in round 3 at all.
+POSE_ANGLES = ((0, 40), (35, 65), (55, 90), None, None)
 MARK = "每次碰到时按住空格，离开时松开"
 HOLD = "按住期间一直按着空格"
 SLOW = "慢慢做，两三秒一次"
@@ -46,6 +50,7 @@ class Step:
     labels: tuple  # One of 0, 1, None or KEY for each of CHANNELS (middle, index, ring).
     note: str = ""
     round: int = 0  # 1-based; 0 outside the rounds.
+    pose: tuple | None = None  # On a notice: the palm angle (low, high) its round asks for.
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,7 @@ class Clip:
 
     steps: tuple
     notice: str = ""  # Shown before it and not recorded, e.g. the hand pose of a new round.
+    pose: tuple | None = None  # The palm angle (low, high) asked for while it is recorded.
 
     @property
     def seconds(self):
@@ -78,7 +84,13 @@ class Clip:
 
 def _round(number, pose):
     steps = [
-        Step("pose", f"这一轮的手部朝向：{pose}", 8, (None, None, None)),
+        Step(
+            "pose",
+            f"这一轮的手部朝向：{pose}",
+            8,
+            (None, None, None),
+            pose=POSE_ANGLES[number - 1],
+        ),
         Step("open", "手放松张开，手指互不接触", 6, (0, 0, 0)),
     ]
     for _ in range(4):
@@ -120,7 +132,7 @@ def _round(number, pose):
         ),
         Step("adjust", "手自然动一动：转转手腕、换个位置，手指互不接触", 7, (0, 0, 0)),
     ]
-    return [Step(s.name, s.text, s.seconds, s.labels, s.note, number) for s in steps]
+    return [Step(s.name, s.text, s.seconds, s.labels, s.note, number, s.pose) for s in steps]
 
 
 def session():
@@ -138,11 +150,12 @@ def clips(steps):
     short steps of one round that need no Space marks forms one clip, because the point of
     those steps is the switch between them. Every other step is a clip of its own.
     """
-    result, run, notices = [], [], []
+    result, run, notices, poses = [], [], [], {}
 
     def close():
         if run:
-            result.append(Clip(tuple(run), "；".join(notices)))
+            # The pose a notice asks for holds for the rest of its round.
+            result.append(Clip(tuple(run), "；".join(notices), poses.get(run[0].round)))
             run.clear()
             notices.clear()
 
@@ -152,6 +165,8 @@ def clips(steps):
         if all(label is None for label in step.labels):
             close()
             notices.append(step.text)
+            if step.pose is not None:
+                poses[step.round] = step.pose
             continue
         short = step.seconds < SHORT_STEP and KEY not in step.labels
         if not short or (run and run[0].round != step.round):

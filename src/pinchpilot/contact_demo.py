@@ -145,6 +145,17 @@ def project(points, yaw=0.0, pitch=0.0):
     return np.column_stack((x, y)), depth
 
 
+def view_for(pose):
+    """(yaw, pitch) to draw the hand from, so that it looks turned as the round asks.
+
+    `pose` is the palm angle (low, high) of the round, or None for the plain teaching view.
+    """
+    if pose is None:
+        return 25.0, 30.0
+    yaw = max(12.0, min(82.0, (pose[0] + pose[1]) / 2 * 1.1))
+    return yaw, 30.0 - yaw / 10
+
+
 def _pulse(moment, seconds, rhythm):
     """(closing 0..1, touching) for touches repeated in this rhythm within a step."""
     first, period, length = rhythm

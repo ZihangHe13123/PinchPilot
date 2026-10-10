@@ -38,6 +38,10 @@ def test_clips_group_short_steps_and_turn_unlabelled_steps_into_notices():
         assert grips.seconds == 22 and not grips.uses_key
         assert grips.text == "屏幕会自动轮流显示提示，跟着做，共 8 步：捏住：拇指和中指 → 松开"
     assert clips[3].text.startswith("保持捏住。食指点拇指，慢慢做") and clips[3].uses_key
+    # Rounds one to three ask for a palm angle, for every clip of the round and no further.
+    assert [clips[12 * number].pose for number in range(5)] == list(protocol.POSE_ANGLES)
+    assert {clip.pose for clip in clips[24:36]} == {(55, 90)}
+    assert {clip.pose for clip in clips[36:]} == {None}
     assert all(len(clip.steps) == 1 for clip in clips if clip.uses_key)
 
     def step(name, seconds, labels, round=1):

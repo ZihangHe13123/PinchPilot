@@ -1,6 +1,7 @@
 """Offscreen engineering fixtures only; the camera source is simulated, not human data."""
 
 import json
+import math
 import os
 import zipfile
 from dataclasses import replace
@@ -14,7 +15,7 @@ from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QWidget
 
 from pinchpilot.contact_capture import ContactCaptureWindow
-from pinchpilot.contact_data import read_contact_recording
+from pinchpilot.contact_data import palm_angle, read_contact_recording
 from pinchpilot.contact_protocol import KEY, Step
 from pinchpilot.domain import HandFrame
 from pinchpilot.tripod_demo import synthetic_tripod
@@ -609,3 +610,92 @@ def test_draft_failure_keeps_the_recording_and_the_record_of_the_session(guided,
     assert "未能生成待标注模板" in guided.status_label.text()
     with zipfile.ZipFile(guided.bundle_path) as archive:
         assert guided.recording_path.name in archive.namelist()
+
+
+# ---- How the hand is turned: measured from the world landmarks, checked against the round.
+
+
+def turned(window, degrees, seconds=1 / 30):
+    """Feed frames of a hand whose palm makes this angle with the camera."""
+    angle = math.radians(degrees)
+    world = [(0.0, 0.0, 0.0)] * 21
+    for joint, (x, y) in ((5, (-0.03, -0.09)), (17, (0.03, -0.08))):
+        world[joint] = (x * math.cos(angle), y, -x * math.sin(angle))
+    frames = []
+    for _ in range(max(1, round(seconds * 30))):
+        window.test_now += 1 / 30
+        frame = replace(synthetic_tripod(window.test_now), world_landmarks=tuple(world))
+        window.feed(frame, window.test_now)
+        frames.append(frame)
+    return frames
+
+
+def test_palm_angle_reads_how_far_the_hand_is_turned(guided):
+    assert palm_angle(synthetic_tripod(1.0)) is None  # No world landmarks, nothing to say.
+    for degrees in (0, 25, 60, 90):
+        frame = turned(guided, degrees)[0]
+        assert palm_angle(frame) == pytest.approx(degrees, abs=0.01)
+    # The other hand, or the back of the hand towards the camera, reads the same: only how far
+    # the palm is from square to the camera counts.
+    palm = turned(guided, 20)[0]
+    other = tuple((-x, y, z) for x, y, z in palm.world_landmarks)
+    assert palm_angle(replace(palm, world_landmarks=other)) == pytest.approx(20, abs=0.01)
+
+
+def test_a_round_that_asks_for_a_turned_hand_checks_it_and_records_what_was_done(guided):
+    guided.protocol = [
+        Step("pose", "这一轮的手部朝向：手侧过来", 8.0, (None, None, None), round=1, pose=(55, 90)),
+        Step("open", "手张开", 5.0, (0, 0, 0), round=1),
+        Step("grip_move", "捏住", 5.0, (1, 0, 0), round=1),
+    ]
+    start(guided)
+    assert [clip.pose for clip in guided.clips] == [(55, 90), (55, 90)]
+    assert guided.notice_label.text() == "这一轮的手部朝向：手侧过来"
+    assert "看不到手" not in guided.pose_label.text() or guided.palm_now is None
+    turned(guided, 22, 0.5)
+    assert guided.palm_now == pytest.approx(22, abs=0.5)
+    assert "现在约 22°，这一轮需要 55° 以上 ✗" in guided.pose_label.text()
+    assert guided.demo.view[0] > 70  # The example hand is drawn side-on as well.
+
+    tap(guided)  # Held back once: the hand is still facing the camera.
+    assert not guided.clip_running and guided.schedule == []
+    assert "所以还没开始" in guided.result_label.text()
+    turned(guided, 22, 0.2)
+    tap(guided)  # A second start goes ahead; the angle is only an estimate.
+    assert guided.clip_running
+    turned(guided, 22, 5.1)
+    assert not guided.clip_running and guided.clip_index == 1
+    assert "夹角约 22°，不符合这一轮的要求" in guided.result_label.text()
+
+    tap(guided, Qt.Key.Key_Backspace)
+    turned(guided, 70, guided.START_LOCK + 0.2)
+    assert "现在约 70°，这一轮需要 55° 以上 ✓" in guided.pose_label.text()
+    tap(guided)  # Turned as asked: starts at once.
+    assert guided.clip_running
+    turned(guided, 70, 5.1)
+    assert "不符合" not in guided.result_label.text()
+    turned(guided, 70, guided.START_LOCK + 0.2)
+    tap(guided)
+    turned(guided, 70, 5.1)
+    assert guided.stop_reason == "protocol_complete"
+
+    record = json.loads(guided.protocol_path.read_text(encoding="utf-8"))
+    steps = record["steps"]
+    assert [(step["name"], step["discarded"], step["pose"]) for step in steps] == [
+        ("open", True, [55, 90]),
+        ("open", False, [55, 90]),
+        ("grip_move", False, [55, 90]),
+    ]
+    assert [round(step["palm_angle"]) for step in steps] == [22, 70, 70]
+
+
+def test_rounds_without_a_pose_and_hands_without_an_angle_are_never_held_back(guided):
+    start(guided)  # SHORT asks for no pose, and these frames carry no world landmarks.
+    assert guided.clips[0].pose is None and guided.palm_now is None
+    assert "看不到手" in guided.pose_label.text() and "这一轮不限" in guided.pose_label.text()
+    tap(guided)
+    assert guided.clip_running
+    run(guided, 2.1)
+    guided.stop_recording()
+    record = json.loads(guided.protocol_path.read_text(encoding="utf-8"))
+    assert record["steps"][0]["palm_angle"] is None and record["steps"][0]["pose"] is None

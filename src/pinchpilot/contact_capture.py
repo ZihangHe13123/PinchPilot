@@ -3,11 +3,14 @@
 import json
 import math
 import re
+import statistics
 import time
 import zipfile
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -27,8 +30,10 @@ from .contact_data import (
     ContactRecorder,
     annotation_template,
     draft_annotation,
+    palm_angle,
     read_contact_recording,
 )
+from .contact_demo import view_for
 from .contact_demo_view import GestureDemo, caption
 from .domain import HandFrame
 from .widgets import fit_to_screen
@@ -112,6 +117,12 @@ class ContactCaptureWindow(QWidget):
         self.discarded, self.redone = set(), 0
         self.notice = ""
         self.lock_until = 0.0
+        self.recent_angles = deque(maxlen=9)  # palm angle of the last frames with a hand
+        self.clip_angles = []  # palm angle of the frames written in the running clip
+        self.step_angles = {}  # schedule index -> median palm angle of its clip
+        self.step_poses = {}  # schedule index -> the pose its clip asked for
+        self.last_angle = None  # (median angle, pose asked for) of the clip recorded last
+        self.pose_warned = None  # clip index whose start was held back once for its pose
         self.last_feed = None
         self.setWindowTitle("PinchPilot · ML 关键点采集")
         fit_to_screen(self, *((920, 820) if guided else (560, 480)))
@@ -132,7 +143,9 @@ class ContactCaptureWindow(QWidget):
         guide.setContentsMargins(0, 6, 0, 6)
         self.notice_label = QLabel()
         self.notice_label.setWordWrap(True)
-        self.notice_label.setStyleSheet("font-size:15px; color:#9fd6ff;")
+        self.notice_label.setStyleSheet("font-size:18px; font-weight:700; color:#9fd6ff;")
+        self.pose_label = QLabel()
+        self.pose_label.setWordWrap(True)
         self.prompt_label = QLabel()
         self.prompt_label.setWordWrap(True)
         self.prompt_label.setStyleSheet("font-size:26px; font-weight:700; color:#ffffff;")
@@ -150,6 +163,7 @@ class ContactCaptureWindow(QWidget):
         self.result_label = QLabel()
         self.result_label.setWordWrap(True)
         guide.addWidget(self.notice_label)
+        guide.addWidget(self.pose_label)
         columns, words, picture = QHBoxLayout(), QVBoxLayout(), QVBoxLayout()
         for item in (
             self.prompt_label,
@@ -164,7 +178,7 @@ class ContactCaptureWindow(QWidget):
         words.addStretch()
         # Beside the words: a hand that acts the clip out at the pace it should be done.
         self.demo = GestureDemo()
-        self.demo.setMinimumSize(230, 240)
+        self.demo.setMinimumSize(210, 210)
         self.demo_caption = QLabel()
         self.demo_caption.setWordWrap(True)
         self.demo_caption.setStyleSheet("color:#9fb4c4;")
@@ -296,6 +310,8 @@ class ContactCaptureWindow(QWidget):
         self.last_range = self.last_marks = None
         self.discarded, self.redone, self.notice = set(), 0, ""
         self.lock_until = 0.0
+        self.clip_angles, self.step_angles, self.step_poses = [], {}, {}
+        self.last_angle = self.pose_warned = None
         self.stop_reason = self.error = ""
         self.started_utc = datetime.now(timezone.utc).isoformat()
         # Keep the focus off the checkboxes and buttons: a stray Space must not toggle consent
@@ -333,6 +349,13 @@ class ContactCaptureWindow(QWidget):
         self.last_capture = self.last_input_timestamp = frame.timestamp
         self.last_feed = now
         self.hand_present = bool(frame.landmarks)
+        angle = palm_angle(frame)
+        if angle is None:
+            self.recent_angles.clear()
+        else:
+            self.recent_angles.append(angle)
+            if self.clip_running:
+                self.clip_angles.append(angle)
         if self.guided_active and not self.schedule and frame.landmarks:
             # Before the first clip, with the palm to the camera: draw the example as the
             # hand on screen looks, thumb on the same side.
@@ -381,13 +404,33 @@ class ContactCaptureWindow(QWidget):
             self.result_label.setText("相机画面还没准备好，稍等一下再开始。")
             return
         clip = self.clips[self.clip_index]
+        if self._pose_ok(clip) is False and self.pose_warned != self.clip_index:
+            # The hand is not held as this round asks. Say so once; a second start goes ahead,
+            # because the angle is only an estimate.
+            self.pose_warned = self.clip_index
+            return self._refresh()
         self.notice = clip.notice or self.notice
         moment, first = now - self.protocol_start, len(self.schedule)
         for step in clip.steps:
             self.schedule.append((moment, moment + step.seconds, step))
             moment += step.seconds
         self.clip_range = (first, len(self.schedule))
+        for index in range(first, len(self.schedule)):
+            self.step_poses[index] = clip.pose
+        self.clip_angles = []
         self._refresh()
+
+    @property
+    def palm_now(self):
+        """The palm's angle to the camera over the last few frames, or None."""
+        return statistics.median(self.recent_angles) if len(self.recent_angles) >= 3 else None
+
+    def _pose_ok(self, clip, angle=None):
+        """Whether the hand is turned as the clip's round asks; None when that cannot be said."""
+        angle = self.palm_now if angle is None else angle
+        if clip.pose is None or angle is None:
+            return None
+        return clip.pose[0] <= angle <= clip.pose[1]
 
     def _end_clip(self):
         first, end = self.clip_range
@@ -402,6 +445,10 @@ class ContactCaptureWindow(QWidget):
             for moment, pressed in self.key_events
         )
         self.last_marks = holds if clip.uses_key else None
+        angle = statistics.median(self.clip_angles) if self.clip_angles else None
+        for index in range(first, end):
+            self.step_angles[index] = angle
+        self.last_angle = (angle, clip.pose)
         self.last_range, self.clip_range = self.clip_range, None
         self.clip_index += 1
         self.demo_since = self.clock()
@@ -418,7 +465,7 @@ class ContactCaptureWindow(QWidget):
             # Its frames stay in the file without labels; what it asked for is kept by name.
             self.schedule[index] = (start, end, replace(step, labels=(None,) * len(step.labels)))
             self.discarded.add(index)
-        self.last_range = self.last_marks = None
+        self.last_range = self.last_marks = self.last_angle = None
         self.clip_index -= 1
         self.redone += 1
         self.demo_since = self.clock()
@@ -501,8 +548,15 @@ class ContactCaptureWindow(QWidget):
                     "text": step.text,
                     "labels": list(step.labels),
                     "discarded": index in self.discarded,
+                    # How the hand was really held: median angle between the palm and the
+                    # camera over the clip, in degrees, and the range its round asked for.
+                    "palm_angle": self.step_angles.get(index),
+                    "pose": list(step_pose) if step_pose else None,
                 }
-                for index, (start, end, step) in enumerate(self.schedule)
+                for index, (start, end, step), step_pose in (
+                    (index, entry, self.step_poses.get(index))
+                    for index, entry in enumerate(self.schedule)
+                )
             ],
             "space_key": [[moment - started, pressed] for moment, pressed in self.key_events],
             # Steps that ask for Space marks and got none; their marked channel has no label.
@@ -641,6 +695,7 @@ class ContactCaptureWindow(QWidget):
             self.redo_button,
             self.demo,
             self.demo_caption,
+            self.pose_label,
         ):
             item.setVisible(session)
         if not session:
@@ -674,6 +729,29 @@ class ContactCaptureWindow(QWidget):
         notice = clip.notice or self.notice
         self.notice_label.setText(notice)
         self.notice_label.setVisible(bool(notice))
+        self.demo.view = view_for(clip.pose)
+        angle, fits = self.palm_now, self._pose_ok(clip)
+        measured = "看不到手" if angle is None else f"现在约 {angle:.0f}°"
+        if clip.pose is None:
+            self.pose_label.setText(f"手掌和镜头的夹角：{measured}（这一轮不限）")
+            self.pose_label.setStyleSheet("color:#9fb4c4;")
+        else:
+            wanted = (
+                f"{clip.pose[0]}° 以上"
+                if clip.pose[1] >= 90
+                else f"{clip.pose[1]}° 以内"
+                if clip.pose[0] <= 0
+                else f"{clip.pose[0]}° 到 {clip.pose[1]}°"
+            )
+            mark = "" if fits is None else " ✓" if fits else " ✗ 还不对，请照上面的朝向调整"
+            self.pose_label.setText(f"手掌和镜头的夹角：{measured}，这一轮需要 {wanted}{mark}")
+            self.pose_label.setStyleSheet(
+                "color:#f0b35a; font-weight:600;"
+                if fits is False
+                else "color:#5fd38d;"
+                if fits
+                else "color:#9fb4c4;"
+            )
         hand = "手在画面内" if self.hand_present else "没有检测到手"
         self.key_label.setText(("空格：按住中" if self.key_down else "空格：未按") + f" · {hand}")
         self.key_label.setStyleSheet("color:#5fd38d; font-weight:600;" if self.key_down else "")
@@ -705,8 +783,24 @@ class ContactCaptureWindow(QWidget):
         self.guide_status.setText(f"{place} · 这一段 {clip.seconds:.0f} 秒 · 读完后按空格开始")
         self.next_label.setVisible(False)
         self.result_label.setStyleSheet("")
+        turned_wrong = (
+            self.last_angle is not None
+            and self._pose_ok(SimpleNamespace(pose=self.last_angle[1]), self.last_angle[0]) is False
+        )
         if not fresh:
             self.result_label.setText("相机画面中断，恢复后才能开始这一段。")
+        elif self.pose_warned == self.clip_index and fits is False:
+            self.result_label.setStyleSheet("color:#f0b35a; font-weight:600;")
+            self.result_label.setText(
+                "手的朝向和这一轮要求的不一样，所以还没开始。调整好再按空格；"
+                "确实摆不到的话，再按一次空格也会开始。"
+            )
+        elif turned_wrong:
+            self.result_label.setStyleSheet("color:#f0b35a; font-weight:600;")
+            self.result_label.setText(
+                f"上一段手掌和镜头的夹角约 {self.last_angle[0]:.0f}°，不符合这一轮的要求。"
+                "请调整朝向后按退格键重录。"
+            )
         elif self.last_range is None:
             self.result_label.setText("上一段已作废，现在重录这一段。" if self.redone else "")
         elif self.last_marks is None:
