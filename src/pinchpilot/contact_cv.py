@@ -462,6 +462,9 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
         "window_config": meta["window_config"],
         "participants": people,
         "protocols": sorted({item["protocol"] for item in meta["recordings"] if item["protocol"]}),
+        "short_margin_recordings": sum(
+            bool(item.get("short_margins")) for item in meta["recordings"]
+        ),
         "recordings": len(meta["recordings"]),
         "windows": len(pool),
         "threshold": 0.5,
@@ -544,6 +547,12 @@ def markdown(report):
         lines += ["> **草稿标签，仅供试跑。** 标签还没有检查，这些数字不能写进报告。", ""]
     elif report["evidence"] == "synthetic_engineering":
         lines += ["> **合成数据，只验证程序能跑通。** 这些数字不代表真人效果。", ""]
+    if report.get("short_margin_recordings"):
+        lines += [
+            f"> **有 {report['short_margin_recordings']} 段录制是用短于默认值的留空复核的。** "
+            "动作切换瞬间的标签不可靠，这些录制应重新复核后再跑。",
+            "",
+        ]
     lines += [
         f"数据：{len(report['participants'])} 人、{report['recordings']} 段录制、"
         f"{report['windows']} 个窗口。",

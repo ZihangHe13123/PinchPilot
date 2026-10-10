@@ -73,6 +73,23 @@ def test_clips_group_short_steps_and_turn_unlabelled_steps_into_notices():
         protocol.clips([step("bad", 0, (0, 0, 0))])
 
 
+def test_side_session_repeats_the_side_on_round_under_its_own_name():
+    clips = protocol.clips(protocol.side_session())
+    full = protocol.clips(protocol.session())
+    assert len(clips) == 36 and sum(clip.uses_key for clip in clips) == 18
+    # Every clip is the side-on round: its number, its palm angle, its steps.
+    assert {clip.round for clip in clips} == {protocol.SIDE_ROUND} == {3}
+    assert {clip.pose for clip in clips} == {protocol.POSE_ANGLES[2]} == {(55, 90)}
+    for repeat in range(3):
+        mine = [step.name for clip in clips[12 * repeat : 12 * repeat + 12] for step in clip.steps]
+        assert mine == [step.name for clip in full[24:36] for step in clip.steps]
+    assert [clip.notice for clip in clips if clip.notice] == [
+        f"侧对补录 第 {number}/3 遍，手的朝向：{protocol.POSES[2]}" for number in (1, 2, 3)
+    ]
+    assert 7.5 * 60 <= sum(clip.seconds for clip in clips) <= 9 * 60
+    assert protocol.SIDE_NAME in protocol.NAMES and protocol.SIDE_NAME != protocol.NAME
+
+
 def test_position_follows_the_schedule_and_is_none_outside_it():
     schedule = protocol.timeline([Step("a", "A", 2, (0, 0, 0)), Step("b", "B", 3, (1, 0, 0))])
     assert [protocol.position(schedule, t) for t in (-0.1, 0, 1.99, 2, 4.99, 5)] == [

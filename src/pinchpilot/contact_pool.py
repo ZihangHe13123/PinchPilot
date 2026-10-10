@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import __version__
+from . import __version__, contact_protocol
 from .contact_data import (
     CHANNELS,
     FEATURE_COUNT,
@@ -162,6 +162,19 @@ def _schedule(protocol):
         raise ValueError(f"提示记录格式无效：{Path(protocol).name}") from error
 
 
+def _short_margins(label_spec):
+    """Whether a review kept less than the default unlabelled time around changes."""
+    margins = (label_spec.get("review") or {}).get("margins") or {}
+    try:
+        return (
+            margins["settle"] < contact_protocol.SETTLE
+            or margins["lead"] < contact_protocol.LEAD
+            or margins["edge"] < contact_protocol.KEY_EDGE
+        )
+    except (KeyError, TypeError):
+        return False
+
+
 def _build(entries, source, config, allow_draft):
     columns = {key: [] for key in ("last", "y", "rules", "participants", "recordings")}
     columns.update(rounds=[], steps=[], spare_last=[], spare_participants=[])
@@ -174,7 +187,8 @@ def _build(entries, source, config, allow_draft):
         with tempfile.TemporaryDirectory() as scratch:
             recording, labels_path, protocol = _unpack(entry, scratch)
             digest = _sha(recording)
-            draft = is_protocol_draft(_read_json(labels_path))
+            label_spec = _read_json(labels_path)
+            draft = is_protocol_draft(label_spec)
             if digest in seen:
                 # The same recording as a zip and as loose files: keep reviewed labels if any.
                 if not draft and recordings[seen[digest]]["labels"] == "draft":
@@ -248,6 +262,7 @@ def _build(entries, source, config, allow_draft):
                 "episode": meta["episode"],
                 "recording_sha256": digest,
                 "labels": "draft" if draft else "reviewed",
+                "short_margins": _short_margins(label_spec),
                 "frames": len(frames),
                 "windows": usable,
                 "positive_windows": dict(zip(CHANNELS, positives.tolist())),
@@ -343,6 +358,10 @@ def summary(pool):
         "labels": pool.metadata["labels"],
         "windows": len(pool),
         "unlabelled_windows": len(pool.spare_last),
+        # Reviewed with unlabelled margins below the defaults: to be reviewed again.
+        "reviewed_with_short_margins": [
+            item["file"] for item in pool.metadata["recordings"] if item["short_margins"]
+        ],
         "participants": dict(sorted(people.items())),
         "recordings": pool.metadata["recordings"],
         "skipped": pool.metadata["skipped"],

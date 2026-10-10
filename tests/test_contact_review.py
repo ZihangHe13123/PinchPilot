@@ -514,6 +514,53 @@ def test_window_lists_ones_own_recordings_first_and_opens_one_that_needs_review(
     window.close()
 
 
+def test_margins_below_the_defaults_are_lifted_and_everything_is_reviewed_again(
+    application, folder
+):
+    short = Margins(shift=-0.05, settle=0.3, lead=0.1, edge=0.03)
+    assert (
+        short.shortened and not Margins().shortened and not Margins(edge=0.2, settle=1.5).shortened
+    )
+    assert short.at_least_default() == Margins(shift=-0.05)
+    session = load_session(next(folder.rglob("*.zip")))
+    save_reviewed(session, "P01", short, accept_all(session, discard={1}))
+    # Such a review is flagged wherever recordings are listed or read for training.
+    assert list_recordings(folder)[0]["margins_shortened"] is True
+    pool = load_contact_pool(folder)
+    assert pool.metadata["recordings"][0]["short_margins"] is True
+    from pinchpilot.contact_pool import summary
+
+    assert summary(pool)["reviewed_with_short_margins"] == [pool.metadata["recordings"][0]["file"]]
+
+    checker = ReviewWindow(folder, "P02")  # Not worth cross-checking as it stands.
+    try:
+        assert checker.unit is None and "留空调得比默认值短" in checker.status_label.text()
+    finally:
+        checker.close()
+
+    window = ReviewWindow(folder, "P01")
+    window.timer.stop()
+    try:
+        # Reopened by its owner: default margins, the shift kept, and every unit open again,
+        # the discarded one included.
+        assert window.margins == Margins(shift=-0.05) and window.decisions == {}
+        assert "留空已恢复默认" in window.status_label.text() and window.position == 0
+        assert load_progress(window.session)[1:] == (Margins(shift=-0.05), {})
+        for name, floor in (("edge", 70), ("settle", 800), ("lead", 300)):
+            slider = window.sliders[name]
+            assert slider.value() * slider.property("step") == floor
+            slider.setValue(0)  # The margins can be widened, never shortened.
+            assert slider.value() * slider.property("step") == floor
+        for _ in range(5):
+            press(window, Qt.Key.Key_Return)
+        window.finish()
+        assert not load_reviewed(window.session)[1].shortened
+        assert list_recordings(folder)[0]["margins_shortened"] is False
+        assert load_contact_pool(folder).metadata["recordings"][0]["short_margins"] is False
+    finally:
+        window.close()
+
+
 def test_windows_open_inside_the_screen_and_can_shrink_to_a_small_laptop(application, folder):
     available = application.primaryScreen().availableGeometry()
     window = ReviewWindow(folder, "P01")

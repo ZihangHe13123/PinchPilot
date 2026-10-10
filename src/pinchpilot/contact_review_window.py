@@ -36,11 +36,13 @@ STATE_COLORS = {
     DISAGREE: "#e0705c",
 }
 # name, label, (low, high, step) in milliseconds
+# The three margins start at their defaults and can only be widened. Shorter ones put the
+# moments when the hand is still changing into the labels.
 SLIDERS = (
     ("shift", "空格标记提前", (-300, 500, 10)),
-    ("edge", "按下松开前后留空", (30, 400, 10)),
-    ("settle", "提示出现后留空", (200, 2500, 50)),
-    ("lead", "提示结束前留空", (100, 1500, 50)),
+    ("edge", "按下松开前后留空", (round(contact_protocol.KEY_EDGE * 1000), 400, 10)),
+    ("settle", "提示出现后留空", (round(contact_protocol.SETTLE * 1000), 2500, 50)),
+    ("lead", "提示结束前留空", (round(contact_protocol.LEAD * 1000), 1500, 50)),
 )
 
 
@@ -437,13 +439,23 @@ class ReviewWindow(QWidget):
                 mode, owner = "review", self.annotator
                 margins, decisions, notes = Margins(), {}, {}
                 saved = contact_review.load_progress(session)
+                reset = False
                 if saved is not None:
                     _, margins, decisions = saved
+                    if margins.shortened:
+                        # An earlier review used margins below the defaults. Every label
+                        # changes with them, so every unit is looked at again.
+                        margins, decisions, reset = margins.at_least_default(), {}, True
                 items = list(session.units)
                 self.objections = contact_review.disagreements(session)
             else:
-                mode = "crosscheck"
+                mode, reset = "crosscheck", False
                 owner, margins, reviewed, _ = contact_review.load_reviewed(session)
+                if margins.shortened:
+                    raise ValueError(
+                        f"{owner} 检查这段录制时把留空调得比默认值短，需要重新检查。"
+                        "等对方重新保存并上传后再抽查。"
+                    )
                 sample = contact_review.sample_units(session, reviewed, self.annotator)
                 items = [session.units[index] for index in sample]
                 decisions, notes = contact_review.load_crosscheck(session, self.annotator)
@@ -463,6 +475,13 @@ class ReviewWindow(QWidget):
         self._relabel()
         waiting = [i for i, unit in enumerate(items) if unit.index not in self.decisions]
         self.go(waiting[0] if waiting else 0)
+        if mode == "review" and reset:
+            self._save()
+            self._refresh()
+            self.status_label.setText(
+                "上次检查时把留空调得比默认值短，动作切换的瞬间也被打上了标签。"
+                "留空已恢复默认，所有段都需要重新看一遍；之前因为对不上而作废的段，现在多半对得上了。"
+            )
 
     def _relabel(self):
         base = self.decisions if self.mode == "review" else self.reviewed
