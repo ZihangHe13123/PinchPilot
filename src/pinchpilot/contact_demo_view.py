@@ -36,7 +36,7 @@ class GestureDemo(QWidget):
         self.setMinimumSize(260, 250)
         self.step = None
         self.state = contact_demo.DemoState()
-        self.view = VIEW
+        self.view = VIEW  # (yaw, pitch); the capture window turns it as each round asks.
         self.mirror = False  # True draws a left hand: thumb on the right.
 
     def show_step(self, step, moment):

@@ -529,16 +529,18 @@ def test_windows_open_inside_the_screen_and_can_shrink_to_a_small_laptop(applica
     assert capture.height() <= available.height() - 60
     capture.clock = lambda: 5.0
     capture.show()
-    capture.feed(synthetic_tripod(5.0), 5.0)
-    capture.consent.setChecked(True)
-    capture.start_recording()
-    application.processEvents()
-    # During a session the long explanations step aside for the prompt and the example hand.
-    assert capture.scope_note.isHidden() and capture.annotation_note.isHidden()
-    assert capture.minimumSizeHint().height() <= 640
-    capture.stop_recording()
-    assert not capture.scope_note.isHidden()
-    capture.close()
+    try:  # A window left open would keep a later test's event loop from ending.
+        capture.feed(synthetic_tripod(5.0), 5.0)
+        capture.consent.setChecked(True)
+        capture.start_recording()
+        application.processEvents()
+        # During a session the long explanations step aside for the prompt and the hand.
+        assert capture.scope_note.isHidden() and capture.annotation_note.isHidden()
+        assert capture.minimumSizeHint().height() <= 640
+        capture.stop_recording()
+        assert not capture.scope_note.isHidden()
+    finally:
+        capture.close()
 
 
 def test_review_command_opens_and_closes(application, folder, capsys):
