@@ -635,13 +635,11 @@ def test_palm_angle_reads_how_far_the_hand_is_turned(guided):
     for degrees in (0, 25, 60, 90):
         frame = turned(guided, degrees)[0]
         assert palm_angle(frame) == pytest.approx(degrees, abs=0.01)
-    flipped = replace(
-        frame, world_landmarks=tuple((-x, y, -z) for x, y, z in frame.world_landmarks)
-    )
-    assert palm_angle(flipped) == pytest.approx(90, abs=0.01)
-    back = turned(guided, 20)[0]
-    mirrored = tuple((x, y, -z) for x, y, z in back.world_landmarks)
-    assert palm_angle(replace(back, world_landmarks=mirrored)) == pytest.approx(20, abs=0.01)
+    # The other hand, or the back of the hand towards the camera, reads the same: only how far
+    # the palm is from square to the camera counts.
+    palm = turned(guided, 20)[0]
+    other = tuple((-x, y, z) for x, y, z in palm.world_landmarks)
+    assert palm_angle(replace(palm, world_landmarks=other)) == pytest.approx(20, abs=0.01)
 
 
 def test_a_round_that_asks_for_a_turned_hand_checks_it_and_records_what_was_done(guided):
