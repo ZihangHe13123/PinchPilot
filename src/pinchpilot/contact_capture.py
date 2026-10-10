@@ -56,8 +56,8 @@ def _finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def _session_name():
-    return datetime.now().strftime("session_%Y%m%d_%H%M%S")
+def _session_name(side=False):
+    return datetime.now().strftime(("side" if side else "session") + "_%Y%m%d_%H%M%S")
 
 
 def _clock_text(seconds):
@@ -219,6 +219,13 @@ class ContactCaptureWindow(QWidget):
         )
         self.guided_box.setChecked(guided)
         layout.addWidget(self.guided_box)
+        side = contact_protocol.clips(contact_protocol.side_session())
+        minutes = round(sum(clip.seconds for clip in side) / 60)
+        self.side_box = QCheckBox(
+            f"只补录侧对：共 {len(side)} 段、约 {minutes} 分钟，给已经录过完整一次的人"
+        )
+        layout.addWidget(self.side_box)
+        self.side_session = False  # Whether the running or last session was side-on only.
         buttons = QHBoxLayout()
         self.start_button = QPushButton("开始采集")
         self.stop_button = QPushButton("停止并保存")
@@ -249,6 +256,7 @@ class ContactCaptureWindow(QWidget):
         self.redo_button.clicked.connect(self.redo_clip)
         self.consent.toggled.connect(self._consent_changed)
         self.guided_box.toggled.connect(self._refresh)
+        self.side_box.toggled.connect(self._side_toggled)
         self.participant.textChanged.connect(self._refresh)
         self.session.textChanged.connect(self._refresh)
         self.timer = QTimer(self)
@@ -318,7 +326,9 @@ class ContactCaptureWindow(QWidget):
         # or press a button, during the recording or after it ends.
         self.setFocus()
         if self.guided_box.isChecked():
-            self.clips = contact_protocol.clips(self.protocol)
+            self.side_session = self.side_box.isChecked()
+            steps = contact_protocol.side_session() if self.side_session else self.protocol
+            self.clips = contact_protocol.clips(steps)
             self.protocol_start = self.demo_since = self.clock()
             self.demo_timer.start()
             # Space must reach this window whichever control has the focus.
@@ -420,6 +430,15 @@ class ContactCaptureWindow(QWidget):
         self.clip_angles = []
         self._refresh()
 
+    def _protocol_name(self):
+        return contact_protocol.SIDE_NAME if self.side_session else contact_protocol.NAME
+
+    def _side_toggled(self, side):
+        """Name the session after what it records, unless the person typed a name."""
+        if re.fullmatch(r"(session|side)_\d{8}_\d{6}(_2)?", self.session.text().strip()):
+            self.session.setText(_session_name(side))
+        self._refresh()
+
     @property
     def palm_now(self):
         """The palm's angle to the camera over the last few frames, or None."""
@@ -512,7 +531,7 @@ class ContactCaptureWindow(QWidget):
             self.recording_path,
             candidate,
             contact_protocol.intervals(labels),
-            contact_protocol.NAME,
+            self._protocol_name(),
         )
 
     def _save_protocol(self, started, ended, reason):
@@ -524,7 +543,7 @@ class ContactCaptureWindow(QWidget):
         )
         payload = {
             "schema": "pinchpilot-contact-protocol-v1",
-            "protocol": contact_protocol.NAME,
+            "protocol": self._protocol_name(),
             "completed": reason == "protocol_complete",
             "time_unit": "seconds from the start of the session",
             "clock_start": started,  # Same clock as the frame timestamps.
@@ -657,7 +676,7 @@ class ContactCaptureWindow(QWidget):
         self.error = "；".join(errors)
         if self.count:
             # The next recording in this window is another session, not more of this one.
-            name = _session_name()
+            name = _session_name(self.side_box.isChecked())
             self.session.setText(name if name != self.identity[1] else f"{name}_2")
 
     def _demo_step(self, now):
@@ -683,8 +702,9 @@ class ContactCaptureWindow(QWidget):
     def _refresh_guide(self, now, fresh):
         self.guide_panel.setVisible(self.guided_box.isChecked())
         session = self.guided_active
-        # During a session the general explanations make room for the prompt and the hand.
-        for item in (self.scope_note, self.annotation_note):
+        # During a session the general explanations and the two choices that can no longer
+        # change make room for the prompt and the hand.
+        for item in (self.scope_note, self.annotation_note, self.guided_box, self.side_box):
             item.setVisible(not session)
         for item in (
             self.step_bar,
@@ -725,7 +745,10 @@ class ContactCaptureWindow(QWidget):
             return
         clip = self.clips[self.clip_index]
         rounds = max(item.round for item in self.clips)
-        place = f"第 {clip.round}/{rounds} 轮 · 第 {self.clip_index + 1}/{len(self.clips)} 段"
+        place = f"第 {self.clip_index + 1}/{len(self.clips)} 段"
+        place = (
+            f"侧对补录 · {place}" if self.side_session else f"第 {clip.round}/{rounds} 轮 · {place}"
+        )
         notice = clip.notice or self.notice
         self.notice_label.setText(notice)
         self.notice_label.setVisible(bool(notice))
@@ -845,6 +868,7 @@ class ContactCaptureWindow(QWidget):
         self.participant.setEnabled(not active)
         self.session.setEnabled(not active)
         self.guided_box.setEnabled(not active)
+        self.side_box.setEnabled(not active and self.guided_box.isChecked())
         self.count_label.setText(f"已写入 {self.count} 帧 · 其中无手 {self.missing_count} 帧")
         if active and not fresh:
             self.status_label.setText("相机画面中断，等待恢复；录制中超过 5 秒会停止并保存")

@@ -394,6 +394,10 @@ def test_report_says_when_numbers_are_not_results():
     synthetic = markdown(run_cv(pool, settings, allow_synthetic=True))
     assert "合成数据，只验证程序能跑通" in synthetic and "手掌正对镜头" not in synthetic
     assert "草稿" not in markdown(run_cv(fake_pool(), settings))
+    assert "短于默认值的留空" not in markdown(run_cv(fake_pool(), settings))
+    pool = fake_pool()
+    pool.metadata["recordings"][1]["short_margins"] = True
+    assert "有 1 段录制是用短于默认值的留空复核的" in markdown(run_cv(pool, settings))
 
 
 def test_finger_inputs_hold_only_the_thumb_and_one_finger():

@@ -17,7 +17,14 @@ from .contact_data import CHANNELS
 # Session 1 ran every step on one continuous timer. A first real recording showed that the
 # prompts could not be read and followed at that pace, so session 2 is self-paced.
 NAME = "pinchpilot-guided-session-2"
-NAMES = ("pinchpilot-guided-session-1", NAME)  # Both use the same rounds and step names.
+# The first self-paced sessions were hardly turned in the side-on round. A side session
+# records that round alone, three times over, to add what those sessions lack. Its rounds
+# all carry the number of the side-on round, so that "round 3" means side-on everywhere.
+SIDE_NAME = "pinchpilot-guided-side-1"
+SIDE_ROUND = 3
+SIDE_REPEATS = 3
+# These all use the same step names, and a round number means the same pose in each.
+NAMES = ("pinchpilot-guided-session-1", NAME, SIDE_NAME)
 KEY = "key"  # In a step's labels: the Space key marks this channel.
 
 # Frames near a change of prompt or of the Space key stay unlabelled, in seconds.
@@ -82,11 +89,11 @@ class Clip:
         return f"屏幕会自动轮流显示提示，跟着做，共 {len(self.steps)} 步：{prompts}"
 
 
-def _round(number, pose):
+def _round(number, pose, notice="这一轮的手部朝向"):
     steps = [
         Step(
             "pose",
-            f"这一轮的手部朝向：{pose}",
+            f"{notice}：{pose}",
             8,
             (None, None, None),
             pose=POSE_ANGLES[number - 1],
@@ -140,6 +147,16 @@ def session():
     steps = []
     for number, pose in enumerate(POSES, 1):
         steps += _round(number, pose)
+    return steps
+
+
+def side_session():
+    """The side-on round alone, several times: about 8 minutes of recording."""
+    steps = []
+    for repeat in range(1, SIDE_REPEATS + 1):
+        steps += _round(
+            SIDE_ROUND, POSES[SIDE_ROUND - 1], f"侧对补录 第 {repeat}/{SIDE_REPEATS} 遍，手的朝向"
+        )
     return steps
 
 

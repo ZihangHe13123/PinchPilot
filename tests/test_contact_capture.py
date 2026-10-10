@@ -699,3 +699,46 @@ def test_rounds_without_a_pose_and_hands_without_an_angle_are_never_held_back(gu
     guided.stop_recording()
     record = json.loads(guided.protocol_path.read_text(encoding="utf-8"))
     assert record["steps"][0]["palm_angle"] is None and record["steps"][0]["pose"] is None
+
+
+def test_side_on_only_session_records_the_side_round_under_its_own_name(application, tmp_path):
+    window = ContactCaptureWindow(tmp_path, guided=True)
+    window.test_now = 100.0
+    window.clock = lambda: window.test_now
+    window.timer.stop()
+    try:
+        assert not window.side_box.isChecked() and window.session.text().startswith("session_")
+        window.guided_box.setChecked(False)
+        assert not window.side_box.isEnabled()  # It is a kind of guided session.
+        window.guided_box.setChecked(True)
+        window.side_box.setChecked(True)
+        assert window.session.text().startswith("side_")  # The file name will say what it is.
+        window.session.setText("我自己起的名字")
+        window.side_box.setChecked(False)
+        window.side_box.setChecked(True)
+        assert window.session.text() == "我自己起的名字"
+        window.session.setText("side_20261010_000000")
+
+        turned(window, 70, 0.3)
+        window.consent.setChecked(True)
+        window.start_recording()
+        assert window.side_session and len(window.clips) == 36
+        assert "侧对补录 · 第 1/36 段" in window.guide_status.text()
+        assert window.notice_label.text().startswith("侧对补录 第 1/3 遍，手的朝向：手侧过来")
+        assert "这一轮需要 55° 以上 ✓" in window.pose_label.text()
+        assert window.guided_box.isHidden() and window.side_box.isHidden()
+        tap(window)
+        turned(window, 70, 6.1)
+        assert window.clip_index == 1
+        window.stop_recording()
+        record = json.loads(window.protocol_path.read_text(encoding="utf-8"))
+        assert record["protocol"] == "pinchpilot-guided-side-1"
+        assert (record["clips_planned"], record["clips_recorded"]) == (36, 1)
+        assert record["steps"][0]["round"] == 3 and record["steps"][0]["pose"] == [55, 90]
+        spec = json.loads(window.annotation_path.read_text(encoding="utf-8"))
+        assert spec["protocol"] == "pinchpilot-guided-side-1"
+        assert "_side-20261010-000000.zip" in window.bundle_path.name
+        assert window.session.text().startswith("side_") and not window.side_box.isHidden()
+    finally:
+        window.close()
+        application.processEvents()

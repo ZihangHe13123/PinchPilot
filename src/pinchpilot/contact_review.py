@@ -59,6 +59,27 @@ class Margins:
             ):
                 raise ValueError(f"复核参数 {name} 超出范围")
 
+    @property
+    def shortened(self):
+        """Whether any unlabelled margin is below its default.
+
+        The defaults keep the moments when the hand is still changing out of the labels.
+        Shorter margins label those moments by the prompt, which is often wrong there.
+        """
+        return (
+            self.settle < contact_protocol.SETTLE
+            or self.lead < contact_protocol.LEAD
+            or self.edge < contact_protocol.KEY_EDGE
+        )
+
+    def at_least_default(self):
+        return Margins(
+            self.shift,
+            max(self.settle, contact_protocol.SETTLE),
+            max(self.lead, contact_protocol.LEAD),
+            max(self.edge, contact_protocol.KEY_EDGE),
+        )
+
 
 @dataclass(frozen=True)
 class Unit:
@@ -510,6 +531,11 @@ def list_recordings(folder):
                 )
             except (ValueError, KeyError, TypeError):
                 continue
+        short = False
+        try:
+            short = margins is not None and Margins(**margins).shortened
+        except (TypeError, ValueError):
+            pass
         rows.append(
             {
                 "path": path,
@@ -519,6 +545,8 @@ def list_recordings(folder):
                 "units": units,
                 "discarded": discarded,
                 "margins": margins,
+                # Reviewed with margins below the defaults: needs to be reviewed again.
+                "margins_shortened": short,
                 "crosschecks": checks,
             }
         )
