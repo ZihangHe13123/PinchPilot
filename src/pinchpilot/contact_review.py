@@ -271,6 +271,35 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# What a saved file says about the saving itself, not about the review.
+STAMPS = ("completed_utc", "updated_utc", "app_version")
+
+
+def _save_if_changed(path, record):
+    """Write `record` unless the file already says the same; True when it was written.
+
+    Only the time of saving and the app version are set aside in the comparison. Cross-checks
+    and the pool fingerprint are tied to the labels file, so saving an unchanged review once
+    more must leave the file as it is.
+    """
+
+    def plain(value):
+        value = json.loads(json.dumps(value))
+        for part in (value, value.get("review")):
+            if isinstance(part, dict):
+                for key in STAMPS:
+                    part.pop(key, None)
+        return value
+
+    try:
+        if path.is_file() and plain(_read_json(path)) == plain(record):
+            return False
+    except (AttributeError, ValueError):
+        pass  # Not something this tool wrote in this form; it is replaced below.
+    save_json(path, record)
+    return True
+
+
 def _name(value, what):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"需要填写{what}的编号")
@@ -286,7 +315,7 @@ def _check_decisions(session, decisions, allowed):
 def save_progress(session, annotator, margins, decisions):
     """Remember where the review stands, so that it can be closed and continued."""
     _check_decisions(session, decisions, (ACCEPTED, DISCARDED))
-    save_json(
+    _save_if_changed(
         session.sidecar(".review.json"),
         {
             "schema": REVIEW_SCHEMA,
@@ -323,7 +352,10 @@ def load_progress(session):
 
 
 def save_reviewed(session, annotator, margins, decisions):
-    """Write the reviewed labels beside the recording; every unit must have a decision."""
+    """Write the reviewed labels beside the recording; every unit must have a decision.
+
+    Saving the same review again leaves the files untouched.
+    """
     annotator = _name(annotator, "复核者")
     _check_decisions(session, decisions, (ACCEPTED, DISCARDED))
     left = pending(session, decisions)
@@ -341,7 +373,7 @@ def save_reviewed(session, annotator, margins, decisions):
     labels = frame_labels(session, margins, decisions).tolist()
     rows = [tuple(None if value < 0 else value for value in row) for row in labels]
     discarded = [unit for unit in session.units if decisions[unit.index] == DISCARDED]
-    save_json(
+    _save_if_changed(
         target,
         {
             "schema": ANNOTATION_SCHEMA,
@@ -428,7 +460,7 @@ def save_crosscheck(session, checker, verdicts, notes=None):
     notes = notes or {}
     units = {unit.index: unit for unit in session.units}
     target = session.sidecar(f".crosscheck.{checker}.json")
-    save_json(
+    _save_if_changed(
         target,
         {
             "schema": CROSSCHECK_SCHEMA,
