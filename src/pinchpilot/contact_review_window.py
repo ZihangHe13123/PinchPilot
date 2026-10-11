@@ -612,17 +612,26 @@ class ReviewWindow(QWidget):
     def finish(self):
         if self.mode != "review" or self.session is None:
             return
+        labels = self.session.sidecar(".labels.json")
         try:
+            before = labels.read_bytes() if labels.is_file() else None
             target = contact_review.save_reviewed(
                 self.session, self.annotator, self.margins, self.decisions
             )
+            unchanged = before is not None and before == target.read_bytes()
         except (ValueError, OSError) as error:
             self.error = f"保存失败：{error}"
             return self._refresh()
         self.error = ""
-        self.objections = {}  # They were about the labels this save has just replaced.
+        # Objections were about the labels as they were; they stay only if nothing changed.
+        self.objections = contact_review.disagreements(self.session)
         self._update_picker()
         self._refresh()
+        if unchanged:
+            self.status_label.setText(
+                "标签和上次保存的一样，文件没有改动，不用再上传，已有的抽查仍然有效。"
+            )
+            return
         self.status_label.setText(
             f"已保存。把这两个文件上传到数据仓库里这段录制所在的文件夹：\n"
             f"{target.name}\n{self.session.sidecar('.review.json').name}"

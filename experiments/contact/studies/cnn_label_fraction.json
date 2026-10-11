@@ -1,0 +1,176 @@
+{
+  "schema": "pinchpilot-contact-settings-v1",
+  "model": "cnn",
+  "seed": 42,
+  "note": "标签用量对比：同一个时序 CNN，有无自编码器预训练、有无训练时的旋转缩放噪声，各用 10%、25%、50%、100% 的标签训练。预训练始终用训练者的全部关键点窗口，不用标签。这份文件只用来看验证结果，不用来选最终设置。",
+  "candidates": [
+    {
+      "name": "基础，10% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 15,
+      "label_fraction": 0.1
+    },
+    {
+      "name": "基础＋预训练，10% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 15,
+      "pretrain_epochs": 10,
+      "mask": 0.3,
+      "label_fraction": 0.1
+    },
+    {
+      "name": "旋转＋缩放＋噪声，10% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 30,
+      "rotate": 180,
+      "scale_jitter": 0.15,
+      "noise": 0.03,
+      "label_fraction": 0.1
+    },
+    {
+      "name": "旋转＋缩放＋噪声＋预训练，10% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 30,
+      "rotate": 180,
+      "scale_jitter": 0.15,
+      "noise": 0.03,
+      "pretrain_epochs": 10,
+      "mask": 0.3,
+      "label_fraction": 0.1
+    },
+    {
+      "name": "基础，25% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 15,
+      "label_fraction": 0.25
+    },
+    {
+      "name": "基础＋预训练，25% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 15,
+      "pretrain_epochs": 10,
+      "mask": 0.3,
+      "label_fraction": 0.25
+    },
+    {
+      "name": "旋转＋缩放＋噪声，25% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 30,
+      "rotate": 180,
+      "scale_jitter": 0.15,
+      "noise": 0.03,
+      "label_fraction": 0.25
+    },
+    {
+      "name": "旋转＋缩放＋噪声＋预训练，25% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 30,
+      "rotate": 180,
+      "scale_jitter": 0.15,
+      "noise": 0.03,
+      "pretrain_epochs": 10,
+      "mask": 0.3,
+      "label_fraction": 0.25
+    },
+    {
+      "name": "基础，50% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 15,
+      "label_fraction": 0.5
+    },
+    {
+      "name": "基础＋预训练，50% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 15,
+      "pretrain_epochs": 10,
+      "mask": 0.3,
+      "label_fraction": 0.5
+    },
+    {
+      "name": "旋转＋缩放＋噪声，50% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 30,
+      "rotate": 180,
+      "scale_jitter": 0.15,
+      "noise": 0.03,
+      "label_fraction": 0.5
+    },
+    {
+      "name": "旋转＋缩放＋噪声＋预训练，50% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 30,
+      "rotate": 180,
+      "scale_jitter": 0.15,
+      "noise": 0.03,
+      "pretrain_epochs": 10,
+      "mask": 0.3,
+      "label_fraction": 0.5
+    },
+    {
+      "name": "基础，100% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 15,
+      "label_fraction": 1.0
+    },
+    {
+      "name": "基础＋预训练，100% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 15,
+      "pretrain_epochs": 10,
+      "mask": 0.3,
+      "label_fraction": 1.0
+    },
+    {
+      "name": "旋转＋缩放＋噪声，100% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 30,
+      "rotate": 180,
+      "scale_jitter": 0.15,
+      "noise": 0.03,
+      "label_fraction": 1.0
+    },
+    {
+      "name": "旋转＋缩放＋噪声＋预训练，100% 标签",
+      "channels": 32,
+      "learning_rate": 0.001,
+      "frames": 8,
+      "epochs": 30,
+      "rotate": 180,
+      "scale_jitter": 0.15,
+      "noise": 0.03,
+      "pretrain_epochs": 10,
+      "mask": 0.3,
+      "label_fraction": 1.0
+    }
+  ]
+}

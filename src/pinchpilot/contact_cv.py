@@ -14,10 +14,16 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 from . import __version__, contact_protocol
-from .contact_data import CHANNELS
+from .contact_data import CHANNELS, FEATURE_COUNT
 from .contact_models import _binary_metrics, _normalize, _score
+from .contact_rules import STATISTICS
+from .contact_rules import decide as _rule_decide
+from .contact_rules import distances as _distances
 
 SETTINGS_SCHEMA = "pinchpilot-contact-settings-v1"
+LIVE_SCHEMA = "pinchpilot-live-contacts-v1"
+# The models live control can run without PyTorch.
+LIVE_MODELS = ("rules", "cnn")
 REPORT_SCHEMA = "pinchpilot-contact-cv-v1"
 MODEL_NAMES = {
     "rules": "调过阈值的规则",
@@ -41,7 +47,16 @@ _NETWORK = {
 }
 # Every option a candidate may set, with the value used when it does not.
 DEFAULTS = {
-    "rules": {"frames": 1, "stride": 1, "label_fraction": 1.0, "statistic": "last"},
+    "rules": {
+        "frames": 1,
+        "stride": 1,
+        "label_fraction": 1.0,
+        "statistic": "last",
+        "flat_middle": False,
+        "flat_index": False,
+        "flat_ring": False,
+        "nearest": False,
+    },
     "forest": {
         "frames": 8,
         "stride": 3,
@@ -50,7 +65,15 @@ DEFAULTS = {
         "depth": 12,
         "min_leaf": 2,
     },
-    "cnn": {**_NETWORK, "pretrain_epochs": 0, "mask": 0.3},
+    "cnn": {
+        **_NETWORK,
+        "pretrain_epochs": 0,
+        "mask": 0.3,
+        "inputs": "all",
+        "rotate": 0,
+        "scale_jitter": 0.0,
+        "noise": 0.0,
+    },
     "finger_cnn": {**_NETWORK, "channels": 24, "shared": True, "context": True},
 }
 
@@ -66,6 +89,10 @@ CHECKS = {
     "label_fraction": _number(False, 0.01, 1.0),
     "pretrain_epochs": _number(True, 0, 500),
     "mask": _number(False, 0.05, 0.9),
+    "inputs": lambda value: type(value) is str and value in ("all", "distances"),
+    "rotate": _number(False, 0, 180),
+    "scale_jitter": _number(False, 0.0, 0.5),
+    "noise": _number(False, 0.0, 0.5),
     "trees": _number(True, 10, 2000),
     "depth": _number(True, 1, 64),
     "min_leaf": _number(True, 1, 1000),
@@ -77,7 +104,11 @@ CHECKS = {
     "positive_weight": lambda value: (
         type(value) is str and value == "balanced" or _number(False, 0.05, 50.0)(value)
     ),
-    "statistic": lambda value: type(value) is str and value in ("last", "median", "mean", "min"),
+    "statistic": lambda value: type(value) is str and value in STATISTICS,
+    "flat_middle": lambda value: type(value) is bool,
+    "flat_index": lambda value: type(value) is bool,
+    "flat_ring": lambda value: type(value) is bool,
+    "nearest": lambda value: type(value) is bool,
     "shared": lambda value: type(value) is bool,
     "context": lambda value: type(value) is bool,
 }
@@ -118,6 +149,13 @@ def check_settings(spec):
             if not CHECKS[key](value):
                 raise ValueError(f"设置「{name}」的 {key} 取值无效：{value!r}")
             options[key] = value
+        if options.get("inputs") == "distances":
+            unusable = [key for key in ("rotate", "noise", "pretrain_epochs") if options[key]]
+            if unusable:
+                raise ValueError(
+                    f"设置「{name}」的 inputs 是 distances，网络只看距离比，没有坐标，"
+                    f"不能同时用 {'、'.join(unusable)}"
+                )
         candidates.append({"name": name, "options": options})
     return {"model": model, "seed": seed, "candidates": candidates}
 
@@ -143,13 +181,6 @@ def _best_threshold(values, labels):
     return float((values[best] + above) / 2)
 
 
-def _distances(x, options):
-    recent = x[:, -options["frames"] :, 63:66]
-    if options["statistic"] == "last":
-        return recent[:, -1]
-    return getattr(np, options["statistic"])(recent, axis=1)
-
-
 def _label_subset(pool, rows, fraction, seed):
     """About `fraction` of the labelled windows, taken as whole prompted segments.
 
@@ -171,7 +202,7 @@ def _label_subset(pool, rows, fraction, seed):
     return rows[keep]
 
 
-def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
+def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None, keep=None):
     """Fit on (x, y) and score the named target windows: ({name: scores}, details).
 
     `targets` maps a name to (windows, labels). With `select`, a network keeps for each
@@ -180,6 +211,9 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
 
     `keypoints` are windows without labels from the same people as x. The temporal CNN first
     learns to rebuild them when its settings ask for pretraining.
+
+    `keep`, a dictionary, receives what a rule or a temporal CNN needs to decide new windows
+    later: the cuts, or the weights after the last epoch with the normalization.
     """
     frames = options["frames"]
     for i, channel in enumerate(CHANNELS):
@@ -191,9 +225,11 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
         distances = _distances(x, options)
         thresholds = np.array([_best_threshold(distances[:, i], y[:, i]) for i in range(3)])
         scores = {
-            name: (_distances(windows, options) <= thresholds).astype(np.float32)
+            name: _rule_decide(windows, options, thresholds).astype(np.float32)
             for name, (windows, _) in targets.items()
         }
+        if keep is not None:
+            keep["thresholds"] = thresholds
         return scores, {"thresholds": dict(zip(CHANNELS, thresholds.tolist()))}
     if model == "forest":
 
@@ -226,10 +262,11 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
         def prepare(windows):
             return nets.finger_inputs(windows[:, -frames:])
     else:
-        network = nets.temporal_cnn(frames, options["channels"], seed)
+        first = nets.COORDINATES if options["inputs"] == "distances" else 0
+        network = nets.temporal_cnn(frames, options["channels"], seed, FEATURE_COUNT - first)
 
         def prepare(windows):
-            return windows[:, -frames:]
+            return windows[:, -frames:, first:]
 
     inputs = prepare(x)
     pretraining = model == "cnn" and options["pretrain_epochs"] > 0
@@ -241,6 +278,16 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
     mean = basis.astype(np.float64).mean(axis=axes)
     scale = basis.astype(np.float64).std(axis=axes)
     scale = np.where(scale < 1e-6, 1.0, scale)
+    augment = None
+    if model == "cnn":
+        augment = nets.augmenter(
+            mean,
+            scale,
+            rotate=options["rotate"],
+            scale_jitter=options["scale_jitter"],
+            noise=options["noise"],
+            seed=seed,
+        )
     rebuilt = None
     if pretraining:
         rebuilt = nets.pretrain(
@@ -251,6 +298,7 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
             learning_rate=options["learning_rate"],
             batch_size=options["batch_size"],
             seed=seed,
+            augment=augment,
         )
         rebuilt = {
             "windows": rebuilt["windows"],
@@ -272,12 +320,18 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
         positive_weight=options["positive_weight"],
         seed=seed,
         validation=prepared if select else None,
+        augment=augment,
     )
     scores = {}
     for name, (values, _) in prepared.items():
         if select:
             network.load_state_dict(states[name], strict=True)
         scores[name] = nets.predict(network, values)
+    if keep is not None and model == "cnn":
+        keep["mean"], keep["scale"] = np.asarray(mean), np.asarray(scale)
+        keep["weights"] = {
+            name: value.detach().numpy().copy() for name, value in network.state_dict().items()
+        }
     kept = {key: details[key] for key in ("epochs", "selected_epoch", "parameters")}
     return scores, {**kept, "pretraining": rebuilt}
 
@@ -355,6 +409,89 @@ def _average(results):
     }
 
 
+def _training(pool, index, excluded, options, seed):
+    """Labelled rows to fit on and, for pretraining, the same people's keypoint windows."""
+    chosen = [person for person in index if person not in excluded]
+    rows = np.sort(np.concatenate([index[person] for person in chosen]))
+    keypoints = None
+    if options.get("pretrain_epochs"):
+        # Every complete window of these people, labelled or not: labels are not used.
+        spare = pool.spare_last[np.isin(pool.spare_participants, chosen)]
+        ends = np.sort(np.concatenate((pool.last[rows], spare)))
+        keypoints = pool.gather(ends[:: options["stride"]])
+    rows = _label_subset(pool, rows, options["label_fraction"], seed)
+    return rows[:: options["stride"]], keypoints
+
+
+def fit_for_live(pool, settings, name, *, exclude=None, epochs=None, allow_synthetic=False):
+    """Fit one candidate on everyone except `exclude`, for live control: (record, arrays).
+
+    Nobody is scored. This is the fit the final test makes for the fold that holds `exclude`
+    out; with the `epochs` that fold reports, a temporal CNN comes out the same. `arrays`
+    holds a network's weights and normalization, and is None for a rule.
+    """
+    meta = pool.metadata
+    if meta["source"] == "synthetic" and not allow_synthetic:
+        raise ValueError("合成数据默认拒绝；仅工程验证可加 --allow-synthetic")
+    if meta["labels"] != "reviewed":
+        raise ValueError("草稿标签不能用来导出实时控制用的模型；先完成标签检查")
+    model, seed = settings["model"], settings["seed"]
+    if model not in LIVE_MODELS:
+        raise ValueError("实时控制目前只支持调过阈值的规则和时序 CNN")
+    listed = {candidate["name"]: candidate["options"] for candidate in settings["candidates"]}
+    if name not in listed:
+        raise ValueError(f"设置文件里没有名为「{name}」的设置；可选：{'、'.join(listed)}")
+    options = dict(listed[name])
+    people = sorted(set(pool.participants.tolist()))
+    if exclude is not None and exclude not in people:
+        raise ValueError(f"数据里没有编号为 {exclude} 的人；可选：{'、'.join(people)}")
+    if epochs is not None:
+        if model != "cnn" or not CHECKS["epochs"](epochs):
+            raise ValueError("epochs 只用于时序 CNN，取 1 到 500 的整数")
+        options["epochs"] = epochs
+    if options["frames"] > pool.frames:
+        raise ValueError(f"设置「{name}」的 frames 不能超过 {pool.frames}")
+    index = {person: np.flatnonzero(pool.participants == person) for person in people}
+    excluded = (exclude,) if exclude is not None else ()
+    rows, keypoints = _training(pool, index, excluded, options, seed)
+    keep = {}
+    _, details = _fit_and_score(
+        model,
+        options,
+        seed,
+        pool.windows(rows),
+        pool.y[rows],
+        {},
+        select=False,
+        keypoints=keypoints,
+        keep=keep,
+    )
+    record = {
+        "schema": LIVE_SCHEMA,
+        "app_version": __version__,
+        "model": model,
+        "candidate": name,
+        "options": options,
+        "seed": seed,
+        "trained_on": [person for person in people if person not in excluded],
+        "excluded": exclude,
+        "training_windows": len(rows),
+        "pool_fingerprint": meta.get("fingerprint"),
+        "source": meta["source"],
+        "labels": meta["labels"],
+        "feature_version": meta["feature_version"],
+        "window_config": meta["window_config"],
+        "channels": list(CHANNELS),
+        "threshold": 0.5,
+        "evidence": "fitted_not_scored",
+    }
+    if model == "rules":
+        record["thresholds"] = keep["thresholds"].tolist()
+        return record, None
+    record["parameters"] = details["parameters"]
+    return record, {**keep["weights"], "mean": keep["mean"], "scale": keep["scale"]}
+
+
 def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=None):
     """Validation scores of every candidate, and with `final_test` the held-out test scores."""
     say = progress or (lambda text: None)
@@ -379,17 +516,7 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
             raise ValueError(f"设置「{candidate['name']}」的 frames 不能超过 {pool.frames}")
 
     def training(excluded, options):
-        """Labelled rows to fit on and, for pretraining, the same people's keypoint windows."""
-        chosen = [person for person in people if person not in excluded]
-        rows = np.sort(np.concatenate([index[person] for person in chosen]))
-        keypoints = None
-        if options.get("pretrain_epochs"):
-            # Every complete window of these people, labelled or not: labels are not used.
-            spare = pool.spare_last[np.isin(pool.spare_participants, chosen)]
-            ends = np.sort(np.concatenate((pool.last[rows], spare)))
-            keypoints = pool.gather(ends[:: options["stride"]])
-        rows = _label_subset(pool, rows, options["label_fraction"], seed)
-        return rows[:: options["stride"]], keypoints
+        return _training(pool, index, excluded, options, seed)
 
     def target(person):
         return pool.windows(index[person]), pool.y[index[person]]
@@ -576,6 +703,18 @@ def markdown(report):
         shown = dict(candidate["options"])
         if not shown.get("pretrain_epochs"):
             shown.pop("mask", None)  # Only used by pretraining.
+        for key, off in (
+            ("inputs", "all"),
+            ("rotate", 0),
+            ("scale_jitter", 0),
+            ("noise", 0),
+            ("flat_middle", False),
+            ("flat_index", False),
+            ("flat_ring", False),
+            ("nearest", False),
+        ):
+            if key in shown and shown[key] == off:
+                del shown[key]  # Left out where it changes nothing.
         options = "，".join(f"{key}={value}" for key, value in shown.items())
         size = f"；{candidate['parameters']} 个参数" if candidate["parameters"] else ""
         rebuilt = candidate.get("pretraining")

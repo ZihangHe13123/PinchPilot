@@ -89,6 +89,17 @@ def parser() -> argparse.ArgumentParser:
     cv.add_argument("--allow-synthetic", action="store_true", help="只为工程验证使用合成数据")
     cv.add_argument("--final-test", action="store_true", help="给留出的人打分；定稿后统一运行一次")
     cv.add_argument("--cache", type=Path, default=Path("data/cache/contact_pool"))
+    export = sub.add_parser(
+        "ml-export", help="用一组选定的设置训练实时控制用的模型；不给任何人打分"
+    )
+    export.add_argument("data", type=Path, help="放录制文件的文件夹，例如数据仓库的 recordings")
+    export.add_argument("--settings", type=Path, required=True, help="这个模型的设置文件")
+    export.add_argument("--candidate", required=True, help="设置文件里那一组设置的 name")
+    export.add_argument("--exclude", help="不参与训练的人的编号，例如 P02；不填则用全部的人")
+    export.add_argument("--epochs", type=int, help="时序 CNN 训练几轮；不填用设置文件里的值")
+    export.add_argument("--output", type=Path, required=True, help="需要一个新目录")
+    export.add_argument("--allow-synthetic", action="store_true", help="只为工程验证使用合成数据")
+    export.add_argument("--cache", type=Path, default=Path("data/cache/contact_pool"))
     review = sub.add_parser(
         "ml-review", help="逐段检查按提示录制的草稿标签；别人的录制则抽查其中一部分"
     )
@@ -291,6 +302,31 @@ def main(argv=None) -> int:
             )
             print(write_report(report, settings, output))
             result = {"output": str(output), "evidence": report["evidence"]}
+        elif args.command == "ml-export":
+            from .contact_cv import fit_for_live, read_settings
+            from .contact_live import save_live_model
+            from .contact_pool import load_contact_pool
+
+            if args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):
+                raise ValueError("输出目录已有内容；请换一个新目录")
+            record, arrays = fit_for_live(
+                load_contact_pool(args.data, cache=args.cache),
+                read_settings(args.settings),
+                args.candidate,
+                exclude=args.exclude,
+                epochs=args.epochs,
+                allow_synthetic=args.allow_synthetic,
+            )
+            save_live_model(record, arrays, args.output)
+            result = {
+                "output": str(args.output),
+                "model": record["model"],
+                "candidate": record["candidate"],
+                "trained_on": record["trained_on"],
+                "excluded": record["excluded"],
+                "training_windows": record["training_windows"],
+                "evidence": record["evidence"],
+            }
         elif args.command == "ml-label-template":
             from .contact_data import annotation_template
 

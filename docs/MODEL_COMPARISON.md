@@ -39,6 +39,8 @@ uv run pinchpilot ml-cv C:\Projects\PinchPilot-data\recordings --settings experi
 | `stride` | 训练时每几个窗口取一个；相邻窗口很像，取大一些训练更快 | 全部 |
 | `label_fraction` | 只用这一比例的标签训练，例如 0.1；按整段动作抽取。用来比较标签少时谁更稳 | 全部 |
 | `statistic` | 对最近几帧的距离取什么：`last`、`median`、`mean`、`min` | 规则 |
+| `flat_middle`、`flat_index`、`flat_ring` | 填 `true` 时，这根手指改用画面内的距离：还是拇指尖到指尖，但不算估计出来的深度 | 规则 |
+| `nearest` | 填 `true` 时，食指和无名指同时被判为接触的，只保留离拇指更近的那个 | 规则 |
 | `trees`、`depth`、`min_leaf` | 树的数量、树的深度、叶子最少样本数 | 随机森林 |
 | `channels` | 网络的宽度 | 两个 CNN |
 | `epochs` | 最多训练几轮；程序会自动停在验证效果最好的那一轮 | 两个 CNN |
@@ -46,10 +48,16 @@ uv run pinchpilot ml-cv C:\Projects\PinchPilot-data\recordings --settings experi
 | `positive_weight` | 接触样本的权重；填 `"balanced"` 按比例自动加权 | 两个 CNN |
 | `pretrain_epochs` | 大于 0 时先做这么多轮自编码器预训练：遮住一部分关键点，让网络把它们补回来，不用标签 | 时序 CNN |
 | `mask` | 预训练时遮住的比例，默认 0.3 | 时序 CNN |
+| `rotate` | 训练时把整只手随机转一个角度，绕三个轴各不超过这么多度；0 是不转，180 是任意朝向。转动不改变距离比 | 时序 CNN |
+| `scale_jitter` | 训练时把坐标和距离比一起随机放大或缩小，幅度不超过这个比例，例如 0.15 | 时序 CNN |
+| `noise` | 训练时给每个坐标加一点随机噪声，数值是噪声的大小，以手掌大小为 1，例如 0.03 | 时序 CNN |
+| `inputs` | 网络看什么：`all` 是 63 个坐标加三个距离比（默认）；`distances` 是只看三个距离比，这时不能再用 `rotate`、`noise` 和预训练 | 时序 CNN |
 | `shared` | 三根手指是否共用一套参数 | 手指共享 CNN |
 | `context` | 每根手指的输出是否参考另外两根手指 | 手指共享 CNN |
 
 写错项名或数值超出范围时，程序会指出是哪一组的哪一项。
+
+`experiments\contact\studies\` 里是为回答某一个问题准备的设置文件，用法相同，把 `--settings` 换成它即可；例如 `cnn_label_fraction.json` 比较标签少的时候预训练有没有用。这些文件不用来选最终设置。
 
 ## 怎么读结果
 

@@ -54,9 +54,14 @@ class TripodConfig:
     scroll_deadband: float = 0.004
     tracking_timeout: float = 0.20
     max_jump: float = 0.10
+    # Folder of a fitted contact model (see contact_live) that decides whether index and ring
+    # touch the thumb. Empty: the distance thresholds above decide, as before.
+    contact_model: str = ""
 
     def validate(self):
         validate_wrist_calibration(self.wrist_calibration)
+        if not isinstance(self.contact_model, str):
+            raise ValueError("接触模型应为一个文件夹路径；留空则使用距离阈值")
         if not all(
             isinstance(v, bool)
             for v in (self.right_enabled, self.drag_enabled, self.scroll_enabled)
@@ -69,7 +74,14 @@ class TripodConfig:
             or not all(
                 math.isfinite(v)
                 for k, v in vars(self).items()
-                if k not in ("mode", "motion_profile", "pointer_basis", "wrist_calibration")
+                if k
+                not in (
+                    "mode",
+                    "motion_profile",
+                    "pointer_basis",
+                    "wrist_calibration",
+                    "contact_model",
+                )
             )
         ):
             raise ValueError("三指配置无效")
@@ -170,6 +182,12 @@ class TripodEngine:
             if self.config.pointer_basis == "wrist" and self.config.wrist_calibration
             else None
         )
+        self.contacts = None
+        if self.config.contact_model:
+            from .contact_live import LiveContacts, load_live_model
+
+            self.contacts = LiveContacts(load_live_model(self.config.contact_model))
+        self.contact_decision = None
         self.enabled = True
         self.pointer = None
         self.left_down = False
@@ -275,7 +293,7 @@ class TripodEngine:
             self.state,
             self.pointer,
             events or [],
-            Prediction(self.state.lower(), 1.0, "tripod-rules") if f else None,
+            Prediction(self.state.lower(), 1.0, self._source()) if f else None,
             hint=hint or hints[self.state],
             mode="tripod",
             grip=f.grip if f else None,
@@ -292,6 +310,35 @@ class TripodEngine:
             cancelled=cancelled,
         )
         return self.last_result
+
+    def _source(self):
+        """Who decided this frame's touches: the fitted model, or the distance thresholds."""
+        if self.contact_decision is None:
+            return "tripod-rules"
+        return f"tripod-model-{self.contacts.model.kind}"
+
+    def _with_decision(self, f):
+        """Let the contact model say whether index and ring touch the thumb.
+
+        Only the touch level is taken over. Touching puts the distance at that level at most;
+        not touching keeps it just above. Hover and clear, and so the release of a click,
+        still follow the measured distance. Without a decision for this frame (no model, no
+        full window yet) the measured distances stand as they are. The middle finger's grip
+        is never changed.
+        """
+        decision = self.contact_decision
+        if decision is None:
+            return f
+
+        def level(measured, touching, cut):
+            return min(measured, cut) if touching else max(measured, math.nextafter(cut, 1.0))
+
+        cfg = self.config
+        return replace(
+            f,
+            contact=level(f.contact, bool(decision[1]), cfg.touch_ratio),
+            right_contact=level(f.right_contact, bool(decision[2]), cfg.right_touch_ratio),
+        )
 
     def _anchor(self, f, timestamp):
         self.camera_anchor = f.point
@@ -471,6 +518,8 @@ class TripodEngine:
 
     def process(self, frame: HandFrame) -> EngineResult:
         t = frame.timestamp
+        # Fed on every frame, also while paused, so that a window is ready on resuming.
+        self.contact_decision = self.contacts.push(frame) if self.contacts is not None else None
         if not math.isfinite(t) or (self.last_time is not None and t <= self.last_time):
             return self.reset()
         expired = self.tick(t)
@@ -490,6 +539,7 @@ class TripodEngine:
         f = tripod_features(frame, spatial_scale=wrist, spatial_grip=unified)
         if f is None:
             return self.reset()
+        f = self._with_decision(f)
         # Estimated palm depth can inflate the 3-D scale. Visible fingertip
         # separation independently vetoes a grip; depth cannot authorize an
         # obviously open hand. Use a 2-D numerator here, not the old mixed ratio.
