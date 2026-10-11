@@ -3,7 +3,7 @@
 import json
 import subprocess
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -14,10 +14,12 @@ from pinchpilot.cli import main
 from pinchpilot.contact_cv import check_settings, fit_for_live
 from pinchpilot.contact_data import FEATURE_COUNT
 from pinchpilot.contact_live import LiveContacts, LiveModel, load_live_model, save_live_model
+from pinchpilot.tripod import TripodConfig, TripodEngine, tripod_features
 from pinchpilot.tripod_demo import synthetic_tripod
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_contact_cv import SETTINGS, fake_pool, spec  # noqa: E402
+from test_tripod import Sequence  # noqa: E402
 
 RULE = {"name": "规则", "flat_index": True, "nearest": True, "frames": 3, "statistic": "median"}
 NET = {"channels": 8, "epochs": 6, "learning_rate": 0.01, "batch_size": 16, "stride": 1}
@@ -266,3 +268,119 @@ def test_export_command_writes_a_model_the_app_can_load(tmp_path, capsys):
     assert model.record["source"] == "synthetic" and model.options["nearest"] is True
     assert main([*command, "--output", str(output), "--allow-synthetic"]) == 2
     assert "输出目录已有内容" in capsys.readouterr().err
+
+
+def rule_folder(folder, index=0.26, ring=0.26):
+    """A fitted rule with chosen cuts for index and ring, saved where the engine can load it."""
+    record = {
+        "schema": contact_live.SCHEMA,
+        "model": "rules",
+        "options": {"frames": 1, "statistic": "last"},
+        "thresholds": [0.3, index, ring],
+        "feature_version": "contact-v1",
+        "window_config": {"frames": 8, "max_gap_seconds": 0.12, "max_window_seconds": 0.8},
+        "channels": ["middle", "index", "ring"],
+        "threshold": 0.5,
+    }
+    return str(save_live_model(record, None, folder))
+
+
+def kinds(sequence):
+    return [event.kind for event in sequence.events if event.kind != "move"]
+
+
+def test_engine_lets_the_model_decide_the_touch_and_distances_the_rest(tmp_path):
+    assert asdict(TripodConfig())["contact_model"] == ""
+    plain, keen = (
+        Sequence(),
+        Sequence(TripodConfig(contact_model=rule_folder(tmp_path / "keen", 0.6))),
+    )
+    for s in (plain, keen):
+        s.frames(10)  # Grip: the engine takes over, and the model's window fills.
+        assert s.result.state == "CONTROL"
+        s.frames(6, contact=0.45)
+    # At 0.45 the thresholds see neither touch nor hover; this model calls it a touch.
+    assert plain.result.state == "CONTROL" and not plain.clicks()
+    assert plain.result.prediction.source == "tripod-rules"
+    assert keen.result.state == "PRESSED" and kinds(keen) == ["down"]
+    assert keen.result.prediction.source == "tripod-model-rules"
+    assert keen.result.contact == keen.engine.config.touch_ratio  # What the state machine saw.
+    keen.frames(6, contact=0.85)
+    assert kinds(keen) == ["down", "up"] and keen.result.state == "CONTROL"
+
+    # A model that never sees a touch: the finger comes close, hovers, and nothing is pressed.
+    strict = Sequence(TripodConfig(contact_model=rule_folder(tmp_path / "strict", 0.02)))
+    plain = Sequence()
+    for s in (plain, strict):
+        s.frames(10)
+        s.frames(8, contact=0.12)
+    assert kinds(plain) == ["down"]
+    assert strict.result.state == "APPROACH" and not strict.clicks()
+    touch = strict.engine.config.touch_ratio
+    assert touch < strict.result.contact < touch + 1e-9  # Just above the touch level.
+
+
+def test_release_follows_the_measured_distance_and_the_grip_is_never_changed(tmp_path):
+    s = Sequence(TripodConfig(contact_model=rule_folder(tmp_path / "m", index=0.30, ring=0.30)))
+    s.frames(10)
+    s.frames(5, contact=0.20)
+    assert kinds(s) == ["down"]
+    # The model stops calling it a touch at 0.40, but the finger has not cleared yet (0.48):
+    # the button stays down, exactly as with the thresholds alone.
+    s.frames(10, contact=0.40)
+    assert kinds(s) == ["down"] and s.engine.left_down
+    assert s.result.prediction.source == "tripod-model-rules" and s.result.contact == 0.40
+    s.frames(6, contact=0.60)
+    assert kinds(s) == ["down", "up"]
+
+    engine = s.engine
+    measured = tripod_features(synthetic_tripod(1, contact=0.10, right_contact=0.10))
+    for decision, expected in (
+        ([True, True, True], (0.10, 0.10)),  # Touching: already below the level, left alone.
+        ([False, False, False], (0.26, 0.26)),  # Not touching: lifted just above the level.
+        ([True, False, True], (0.26, 0.10)),
+    ):
+        engine.contact_decision = np.array(decision)
+        seen = engine._with_decision(measured)
+        assert seen.grip == measured.grip and seen.point == measured.point
+        assert (seen.contact, seen.right_contact) == pytest.approx(expected, abs=1e-9)
+    far = tripod_features(synthetic_tripod(1, contact=0.85, right_contact=0.85))
+    engine.contact_decision = np.array([False, True, True])
+    seen = engine._with_decision(far)
+    assert (seen.contact, seen.right_contact) == (0.26, 0.26) and seen.grip == far.grip
+    engine.contact_decision = None
+    assert engine._with_decision(far) is far
+
+
+def test_engine_falls_back_to_thresholds_while_the_model_has_no_window(tmp_path):
+    s = Sequence(TripodConfig(contact_model=rule_folder(tmp_path / "strict", 0.02)))
+    s.frames(10)
+    assert s.result.prediction.source == "tripod-model-rules"
+    # A pause in the frames longer than a window allows, shorter than the tracking timeout:
+    # the model starts a new window, and until it is full the thresholds decide.
+    s.frame(synthetic_tripod(s.t + 0.15, contact=0.12))
+    assert s.engine.contacts.reason == "time_gap"
+    assert s.result.prediction.source == "tripod-rules"
+    s.frames(5, contact=0.12)
+    assert s.result.prediction.source == "tripod-rules" and kinds(s) == ["down"]
+    s.frames(4, contact=0.12)
+    assert s.result.prediction.source == "tripod-model-rules"  # Eight frames again.
+
+    # Frames keep reaching the model while the engine is paused.
+    paused = Sequence(TripodConfig(contact_model=rule_folder(tmp_path / "other", 0.02)))
+    paused.engine.set_enabled(False)
+    paused.frames(9)
+    assert paused.result.state == "PAUSED" and paused.engine.contact_decision is not None
+    paused.engine.set_enabled(True)
+    paused.frames(1)
+    assert paused.result.prediction.source == "tripod-model-rules"
+
+
+def test_engine_refuses_a_model_it_cannot_load(tmp_path):
+    with pytest.raises(ValueError, match="读不到模型文件"):
+        TripodEngine(TripodConfig(contact_model=str(tmp_path / "missing")))
+    with pytest.raises(ValueError, match="接触模型应为一个文件夹路径"):
+        TripodConfig(contact_model=3).validate()
+    folder = rule_folder(tmp_path / "m")
+    engine = TripodEngine(TripodConfig(contact_model=folder))
+    assert engine.contacts.model.kind == "rules" and TripodEngine().contacts is None
