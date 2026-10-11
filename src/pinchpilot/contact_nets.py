@@ -6,6 +6,10 @@ import numpy as np
 
 from .contact_models import _deterministic_cpu, _last_output, _make_cnn, _torch
 
+COORDINATES = 63
+# What is left of a frame's 67 features without the coordinates: three distance ratios and
+# the frame interval.
+DISTANCE_FEATURES = 4
 THUMB = (1, 2, 3, 4)
 # MediaPipe joints of the finger behind each output, in the order of CHANNELS.
 FINGERS = ((9, 10, 11, 12), (5, 6, 7, 8), (13, 14, 15, 16))
@@ -39,9 +43,67 @@ def finger_inputs(x):
     return np.stack(views, axis=1).astype(np.float32)
 
 
-def temporal_cnn(frames, channels, seed):
-    """The causal CNN of contact_models with a chosen width; input [N, T, 67]."""
-    return _make_cnn(frames, seed, channels)
+def temporal_cnn(frames, channels, seed, features=COORDINATES + DISTANCE_FEATURES):
+    """The causal CNN of contact_models with a chosen width; input [N, T, features]."""
+    return _make_cnn(frames, seed, channels, features)
+
+
+def augmenter(mean, scale, *, rotate=0.0, scale_jitter=0.0, noise=0.0, seed=0):
+    """A function that varies normalized [N, T, W] windows the way hands and people vary.
+
+    Each window gets one random turn of the whole hand about its palm centre, up to `rotate`
+    degrees about each of the three axes; one size factor within ±`scale_jitter`, applied to
+    the coordinates and the distance ratios alike; and noise of standard deviation `noise`
+    on every coordinate. A turn changes no distance, so the ratios stay as recorded, and the
+    frame interval is never changed. W is 67, or 4 for windows of ratios and interval only,
+    which have no coordinates to turn. `mean` and `scale` are the normalization of the
+    windows. Returns None when there is nothing to vary.
+    """
+    if not (rotate or scale_jitter or noise):
+        return None
+    torch = _torch()
+    coordinates = len(mean) - DISTANCE_FEATURES
+    if coordinates not in (0, COORDINATES):
+        raise ValueError("窗口的特征数不对，无法做数据增强")
+    if not coordinates and (rotate or noise):
+        raise ValueError("只用距离比时没有坐标可以旋转或加噪声")
+    centre = torch.as_tensor(np.asarray(mean), dtype=torch.float32)
+    spread = torch.as_tensor(np.asarray(scale), dtype=torch.float32)
+    generator = torch.Generator().manual_seed(seed)
+    limit = math.radians(rotate)
+
+    def turns(count):
+        a, b, c = (torch.rand((3, count), generator=generator) * 2 - 1) * limit
+        one, zero = torch.ones(count), torch.zeros(count)
+
+        def matrix(*rows):
+            return torch.stack(rows, dim=1).reshape(count, 3, 3)
+
+        about_z = matrix(a.cos(), -a.sin(), zero, a.sin(), a.cos(), zero, zero, zero, one)
+        about_x = matrix(one, zero, zero, zero, b.cos(), -b.sin(), zero, b.sin(), b.cos())
+        about_y = matrix(c.cos(), zero, c.sin(), zero, one, zero, -c.sin(), zero, c.cos())
+        return about_z @ about_x @ about_y
+
+    def vary(batch):
+        raw = batch * spread + centre
+        count, frames, _ = raw.shape
+        points, ratios, interval = raw[..., :coordinates], raw[..., coordinates:-1], raw[..., -1:]
+        if coordinates:
+            points = points.reshape(count, frames, COORDINATES // 3, 3)
+            if rotate:
+                # The same turn for every frame of a window: the hand turns, not the motion.
+                points = points @ turns(count).transpose(1, 2)[:, None]
+            if noise:
+                points = points + torch.randn(points.shape, generator=generator) * noise
+        if scale_jitter:
+            factor = 1 + (torch.rand((count, 1, 1), generator=generator) * 2 - 1) * scale_jitter
+            ratios = ratios * factor
+            if coordinates:
+                points = points * factor[..., None]
+        points = points.reshape(count, frames, coordinates)
+        return (torch.cat((points, ratios, interval), dim=2) - centre) / spread
+
+    return vary
 
 
 def finger_cnn(frames, channels, seed, shared=True, context=True):
@@ -110,14 +172,15 @@ def predict(network, x, batch=2048):
     return np.concatenate(scores, axis=0) if scores else np.empty((0, 3), dtype=np.float32)
 
 
-def pretrain(network, x, *, epochs, mask, learning_rate, batch_size, seed):
+def pretrain(network, x, *, epochs, mask, learning_rate, batch_size, seed, augment=None):
     """Teach the temporal CNN's two convolutions to rebuild windows they see only in part.
 
     A fraction `mask` of each window is blanked: whole landmarks (their three coordinates) in
     single frames, and single values among the distance and interval features. The
     convolutions' vector at the last frame goes through a throwaway linear layer that must
     give back the blanked values. No labels are used. Inputs are normalized, so a blanked
-    value is the feature's mean. The classification head is left untouched.
+    value is the feature's mean. The classification head is left untouched. `augment`, from
+    `augmenter`, varies every batch first; the varied window is then what must be rebuilt.
     """
     torch = _torch()
     count, frames, width = x.shape
@@ -136,6 +199,8 @@ def pretrain(network, x, *, epochs, mask, learning_rate, batch_size, seed):
             total = weight = 0.0
             for start in range(0, count, batch_size):
                 batch = inputs[order[start : start + batch_size]]
+                if augment is not None:
+                    batch = augment(batch)
                 hidden = torch.rand((len(batch), frames, 21), generator=generator) < mask
                 rest = torch.rand((len(batch), frames, width - 63), generator=generator) < mask
                 blank = torch.cat((hidden.repeat_interleave(3, dim=2), rest), dim=2)
@@ -167,12 +232,15 @@ def train(
     positive_weight,
     seed,
     validation=None,
+    augment=None,
 ):
     """Fit in place on normalized inputs for exactly `epochs`.
 
     `validation` maps a name to (inputs, labels). Each one is scored after every epoch, and
     the weights of its best epoch are returned under its name, so that one training run can
     serve several validation sets. The network itself ends with the last epoch's weights.
+    `augment`, from `augmenter`, varies every training batch; validation windows are scored
+    as they are.
     """
     torch = _torch()
     inputs = torch.from_numpy(x)
@@ -199,7 +267,10 @@ def train(
             for start in range(0, len(x), batch_size):
                 indices = order[start : start + batch_size]
                 optimizer.zero_grad(set_to_none=True)
-                loss = loss_fn(network(inputs[indices]), labels[indices])
+                batch = inputs[indices]
+                if augment is not None:
+                    batch = augment(batch)
+                loss = loss_fn(network(batch), labels[indices])
                 if not torch.isfinite(loss):
                     raise ValueError("训练损失不是有限值")
                 loss.backward()

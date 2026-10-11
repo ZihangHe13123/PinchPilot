@@ -175,13 +175,13 @@ def _last_output(x, conv1, conv2):
     return torch.relu(torch.nn.functional.linear(x, conv2.weight.flatten(1), conv2.bias))
 
 
-def _make_cnn(frames, seed=0, channels=32):
+def _make_cnn(frames, seed=0, channels=32, features=FEATURE_COUNT):
     torch = _torch()
 
     class CausalContactCNN(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.conv1 = torch.nn.Conv1d(FEATURE_COUNT, channels, 3)
+            self.conv1 = torch.nn.Conv1d(features, channels, 3)
             self.second_kernel = max(1, frames - 2)
             self.conv2 = torch.nn.Conv1d(channels, channels, self.second_kernel)
             self.head = torch.nn.Linear(channels, 3)

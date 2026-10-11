@@ -14,7 +14,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 from . import __version__, contact_protocol
-from .contact_data import CHANNELS
+from .contact_data import CHANNELS, FEATURE_COUNT
 from .contact_models import _binary_metrics, _normalize, _score
 
 SETTINGS_SCHEMA = "pinchpilot-contact-settings-v1"
@@ -50,7 +50,15 @@ DEFAULTS = {
         "depth": 12,
         "min_leaf": 2,
     },
-    "cnn": {**_NETWORK, "pretrain_epochs": 0, "mask": 0.3},
+    "cnn": {
+        **_NETWORK,
+        "pretrain_epochs": 0,
+        "mask": 0.3,
+        "inputs": "all",
+        "rotate": 0,
+        "scale_jitter": 0.0,
+        "noise": 0.0,
+    },
     "finger_cnn": {**_NETWORK, "channels": 24, "shared": True, "context": True},
 }
 
@@ -66,6 +74,10 @@ CHECKS = {
     "label_fraction": _number(False, 0.01, 1.0),
     "pretrain_epochs": _number(True, 0, 500),
     "mask": _number(False, 0.05, 0.9),
+    "inputs": lambda value: type(value) is str and value in ("all", "distances"),
+    "rotate": _number(False, 0, 180),
+    "scale_jitter": _number(False, 0.0, 0.5),
+    "noise": _number(False, 0.0, 0.5),
     "trees": _number(True, 10, 2000),
     "depth": _number(True, 1, 64),
     "min_leaf": _number(True, 1, 1000),
@@ -118,6 +130,13 @@ def check_settings(spec):
             if not CHECKS[key](value):
                 raise ValueError(f"设置「{name}」的 {key} 取值无效：{value!r}")
             options[key] = value
+        if options.get("inputs") == "distances":
+            unusable = [key for key in ("rotate", "noise", "pretrain_epochs") if options[key]]
+            if unusable:
+                raise ValueError(
+                    f"设置「{name}」的 inputs 是 distances，网络只看距离比，没有坐标，"
+                    f"不能同时用 {'、'.join(unusable)}"
+                )
         candidates.append({"name": name, "options": options})
     return {"model": model, "seed": seed, "candidates": candidates}
 
@@ -226,10 +245,11 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
         def prepare(windows):
             return nets.finger_inputs(windows[:, -frames:])
     else:
-        network = nets.temporal_cnn(frames, options["channels"], seed)
+        first = nets.COORDINATES if options["inputs"] == "distances" else 0
+        network = nets.temporal_cnn(frames, options["channels"], seed, FEATURE_COUNT - first)
 
         def prepare(windows):
-            return windows[:, -frames:]
+            return windows[:, -frames:, first:]
 
     inputs = prepare(x)
     pretraining = model == "cnn" and options["pretrain_epochs"] > 0
@@ -241,6 +261,16 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
     mean = basis.astype(np.float64).mean(axis=axes)
     scale = basis.astype(np.float64).std(axis=axes)
     scale = np.where(scale < 1e-6, 1.0, scale)
+    augment = None
+    if model == "cnn":
+        augment = nets.augmenter(
+            mean,
+            scale,
+            rotate=options["rotate"],
+            scale_jitter=options["scale_jitter"],
+            noise=options["noise"],
+            seed=seed,
+        )
     rebuilt = None
     if pretraining:
         rebuilt = nets.pretrain(
@@ -251,6 +281,7 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
             learning_rate=options["learning_rate"],
             batch_size=options["batch_size"],
             seed=seed,
+            augment=augment,
         )
         rebuilt = {
             "windows": rebuilt["windows"],
@@ -272,6 +303,7 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
         positive_weight=options["positive_weight"],
         seed=seed,
         validation=prepared if select else None,
+        augment=augment,
     )
     scores = {}
     for name, (values, _) in prepared.items():
@@ -576,6 +608,9 @@ def markdown(report):
         shown = dict(candidate["options"])
         if not shown.get("pretrain_epochs"):
             shown.pop("mask", None)  # Only used by pretraining.
+        for key, off in (("inputs", "all"), ("rotate", 0), ("scale_jitter", 0), ("noise", 0)):
+            if shown.get(key) == off:
+                del shown[key]  # Left out where it changes nothing.
         options = "，".join(f"{key}={value}" for key, value in shown.items())
         size = f"；{candidate['parameters']} 个参数" if candidate["parameters"] else ""
         rebuilt = candidate.get("pretraining")

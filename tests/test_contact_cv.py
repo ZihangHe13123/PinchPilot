@@ -124,6 +124,10 @@ def test_shipped_settings_files_are_valid_and_cover_the_two_finger_cnn_controls(
     assert {(True, True), (False, True), (True, False)} <= switches
     pretrained = [item["options"]["pretrain_epochs"] for item in models["cnn"]["candidates"]]
     assert 0 in pretrained and max(pretrained) > 0  # The same CNN with and without it.
+    # The temporal CNN is also compared with its hands turned in training, and on distances only.
+    options = [item["options"] for item in models["cnn"]["candidates"]]
+    assert any(item["rotate"] for item in options) and not options[0]["rotate"]
+    assert {"all", "distances"} == {item["inputs"] for item in options}
 
 
 def test_best_threshold_is_the_exact_f1_optimum():
@@ -315,6 +319,176 @@ def test_pretraining_learns_to_rebuild_blanked_keypoints_without_touching_the_he
     )
     # The error is averaged over all blanked values; only 1 in 67 of them is not zero.
     assert hidden["history"][-1]["masked_error"] * FEATURE_COUNT > 0.9
+
+
+def test_variation_and_input_options_belong_to_the_temporal_cnn_and_are_checked():
+    filled = check_settings(spec("cnn", {"name": "a"}))["candidates"][0]["options"]
+    assert (filled["inputs"], filled["rotate"], filled["scale_jitter"], filled["noise"]) == (
+        "all",
+        0,
+        0.0,
+        0.0,
+    )
+    assert check_settings(
+        spec("cnn", {"name": "a", "rotate": 180, "scale_jitter": 0.15, "noise": 0.03})
+    )
+    assert check_settings(spec("cnn", {"name": "a", "inputs": "distances", "scale_jitter": 0.2}))
+    for bad in (
+        {"rotate": 181},
+        {"rotate": -1},
+        {"scale_jitter": 0.6},
+        {"noise": -0.1},
+        {"inputs": "ratios"},
+        {"inputs": 1},
+    ):
+        with pytest.raises(ValueError, match="取值无效"):
+            check_settings(spec("cnn", {"name": "a", **bad}))
+    # Distances alone leave no coordinates to turn, to disturb or to blank and rebuild.
+    for clash in ({"rotate": 30}, {"noise": 0.01}, {"pretrain_epochs": 2}):
+        with pytest.raises(ValueError, match=f"inputs 是 distances.*{next(iter(clash))}"):
+            check_settings(spec("cnn", {"name": "a", "inputs": "distances", **clash}))
+    for model in ("finger_cnn", "forest", "rules"):
+        for option in ({"rotate": 30}, {"inputs": "distances"}):
+            with pytest.raises(ValueError, match="不认识的项"):
+                check_settings(spec(model, {"name": "a", **option}))
+
+
+def test_augmenter_turns_whole_hands_and_keeps_what_a_turn_cannot_change():
+    torch = pytest.importorskip("torch")
+    from pinchpilot import contact_nets as nets
+
+    rng = np.random.default_rng(1)
+    raw = rng.normal(0, 1, (40, 8, FEATURE_COUNT)).astype(np.float32)
+    raw[:, :, 63:66] = np.abs(raw[:, :, 63:66]) + 0.1
+    mean, scale = raw.mean(axis=(0, 1)), raw.std(axis=(0, 1))
+    x = torch.from_numpy((raw - mean) / scale)
+
+    def varied(**options):
+        return nets.augmenter(mean, scale, **options)(x).numpy() * scale + mean
+
+    def cloud(values):  # Every landmark of every frame of a window, as one set of points.
+        return values[:, :, :63].reshape(len(values), -1, 3).astype(np.float64)
+
+    assert nets.augmenter(mean, scale) is None  # Nothing to vary.
+
+    turned = varied(rotate=180, seed=3)
+    assert np.allclose(turned[:, :, 63:], raw[:, :, 63:], atol=1e-4)  # Ratios and interval.
+    assert not np.allclose(turned[:, :, :63], raw[:, :, :63], atol=0.2)
+    before, after = cloud(raw), cloud(turned)
+    # All frames of a window turn together about the palm centre: every inner product stays.
+    assert np.allclose(
+        before @ before.transpose(0, 2, 1), after @ after.transpose(0, 2, 1), atol=2e-3
+    )
+    turns = [np.linalg.lstsq(before[i], after[i], rcond=None)[0].T for i in range(40)]
+    assert np.allclose([np.linalg.det(turn) for turn in turns], 1, atol=1e-3)  # No mirror.
+    assert not np.allclose(turns[0], turns[1], atol=0.1)  # Each window has its own turn.
+
+    def angle(turn):
+        return np.degrees(np.arccos(np.clip((np.trace(turn) - 1) / 2, -1, 1)))
+
+    slight = cloud(varied(rotate=10, seed=3))
+    angles = [angle(np.linalg.lstsq(before[i], slight[i], rcond=None)[0].T) for i in range(40)]
+    assert 1 < np.mean(angles) and max(angles) <= 30.5  # At most 10 degrees about each axis.
+
+    sized = varied(scale_jitter=0.2, seed=3)
+    factor = sized[:, :, 63:66] / raw[:, :, 63:66]
+    assert np.allclose(factor, factor[:, :1, :1], atol=2e-3)  # One factor for a window ...
+    assert 0.8 - 1e-3 <= factor.min() and factor.max() <= 1.2 + 1e-3 and factor.std() > 0.05
+    assert np.allclose(sized[:, :, :63], raw[:, :, :63] * factor[:, :1, :1], atol=2e-3)
+    assert np.allclose(sized[:, :, 66], raw[:, :, 66], atol=1e-4)  # ... never the interval.
+
+    change = varied(noise=0.05, seed=3) - raw
+    assert np.allclose(change[:, :, 63:], 0, atol=1e-4)
+    assert 0.045 < change[:, :, :63].std() < 0.055
+
+    both = dict(rotate=90, scale_jitter=0.1, noise=0.02)
+    assert np.array_equal(varied(**both, seed=3), varied(**both, seed=3))
+    assert not np.array_equal(varied(**both, seed=3), varied(**both, seed=4))
+    vary = nets.augmenter(mean, scale, **both, seed=3)
+    assert not torch.equal(vary(x), vary(x))  # A window differs every time it comes up.
+
+    # Windows of the three ratios and the interval can only change size.
+    small_mean, small_scale = mean[63:], scale[63:]
+    small = torch.from_numpy((raw[:, :, 63:] - small_mean) / small_scale)
+    resized = nets.augmenter(small_mean, small_scale, scale_jitter=0.2, seed=3)(small).numpy()
+    resized = resized * small_scale + small_mean
+    factor = resized[:, :, :3] / raw[:, :, 63:66]
+    assert np.allclose(factor, factor[:, :1, :1], atol=2e-3) and factor.std() > 0.05
+    assert np.allclose(resized[:, :, 3], raw[:, :, 66], atol=1e-4)
+    with pytest.raises(ValueError, match="没有坐标"):
+        nets.augmenter(small_mean, small_scale, rotate=30)
+    with pytest.raises(ValueError, match="特征数不对"):
+        nets.augmenter(mean[:10], scale[:10], noise=0.1)
+
+
+def test_only_training_batches_are_varied():
+    pytest.importorskip("torch")
+    from pinchpilot import contact_nets as nets
+
+    rng = np.random.default_rng(2)
+    x = rng.normal(0, 1, (100, 8, FEATURE_COUNT)).astype(np.float32)
+    y = (x[:, -1, 63:66] > 0).astype(np.int8)
+    sizes = []
+
+    def blank(batch):
+        sizes.append(len(batch))
+        return batch * 0
+
+    fit = dict(epochs=3, learning_rate=0.01, batch_size=16, weight_decay=0.0, positive_weight=1.0)
+    network = nets.temporal_cnn(8, 8, seed=1)
+    details, _ = nets.train(network, x, y, **fit, seed=1, validation={"v": (x, y)}, augment=blank)
+    assert sizes == [16, 16, 16, 16, 16, 16, 4] * 3  # Every training batch, nothing else.
+    seen = nets.temporal_cnn(8, 8, seed=1)
+    plain, _ = nets.train(seen, x, y, **fit, seed=1, validation={"v": (x, y)})
+    # Trained on blanks the network learns nothing about x; validation still shows it x.
+    blind = [row["validation_loss"]["v"] for row in details["history"]]
+    sighted = [row["validation_loss"]["v"] for row in plain["history"]]
+    assert sighted[-1] < 0.8 * sighted[0] and sighted[-1] < blind[-1]
+
+    sizes.clear()
+    settings = dict(epochs=2, mask=0.3, learning_rate=0.002, batch_size=32, seed=2)
+    rebuilt = nets.pretrain(nets.temporal_cnn(8, 8, seed=1), x, **settings, augment=blank)
+    assert sizes == [32, 32, 32, 4] * 2
+    # What must be rebuilt is the varied window, here all zeros, which is easy.
+    usual = nets.pretrain(nets.temporal_cnn(8, 8, seed=1), x, **settings)
+    assert rebuilt["history"][-1]["masked_error"] < 0.2 * usual["history"][-1]["masked_error"]
+
+
+def test_cnn_on_distances_only_and_with_varied_hands_runs_the_whole_protocol():
+    pytest.importorskip("torch")
+    base = {"channels": 8, "epochs": 12, "learning_rate": 0.01, "batch_size": 16, "stride": 1}
+    settings = check_settings(
+        spec(
+            "cnn",
+            {"name": "全部", **base},
+            {"name": "只看距离比", **base, "inputs": "distances"},
+            {"name": "旋转", **base, "rotate": 180},
+            {"name": "旋转＋预训练", **base, "rotate": 180, "pretrain_epochs": 3},
+            {"name": "都用", **base, "rotate": 90, "scale_jitter": 0.1, "noise": 0.01},
+        )
+    )
+    report = run_cv(fake_pool(), settings, final_test=True)
+    whole, distances, turned, both, everything = report["candidates"]
+    assert distances["parameters"] < whole["parameters"] == turned["parameters"]
+    assert distances["options"]["inputs"] == "distances" and turned["options"]["rotate"] == 180
+    # The fake pool's labels are in the distances, which a turn leaves alone.
+    assert distances["validation"]["macro_f1"] > 0.9 and turned["validation"]["macro_f1"] > 0.8
+    assert everything["validation"]["macro_f1"] > 0.6
+    # Same seed and data: turning the hands in training is the only difference between these.
+    assert turned["validation"] != whole["validation"]
+    assert both["pretraining"]["windows"] == 120
+    assert all(np.isfinite(fold["macro_f1"]) for fold in report["test"]["folds"])
+    again = run_cv(fake_pool(), settings)
+    assert [item["validation"] for item in again["candidates"]] == [
+        item["validation"] for item in report["candidates"]
+    ]
+    json.dumps(report, allow_nan=False)
+    text = markdown(report)
+    # Shown only for the candidates that use them.
+    assert text.count("inputs=distances") == 1 and "inputs=all" not in text
+    assert text.count("rotate=180") == 2 and text.count("rotate=") == 3
+    assert text.count("scale_jitter=0.1") == 1 and text.count("scale_jitter=") == 1
+    assert text.count("noise=0.01") == 1 and text.count("noise=") == 1
 
 
 def test_pretrained_cnn_runs_the_whole_protocol_and_reports_the_reconstruction():
