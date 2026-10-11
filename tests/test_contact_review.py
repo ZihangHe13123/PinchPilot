@@ -272,7 +272,9 @@ def test_progress_is_kept_between_sittings_and_tied_to_the_recording(session):
         save_progress(session, "P01", margins, {99: ACCEPTED})
 
 
-def test_crosscheck_is_a_fixed_sample_by_another_person_tied_to_the_reviewed_labels(session):
+def test_crosscheck_is_a_fixed_sample_by_another_person_tied_to_the_reviewed_labels(
+    session, monkeypatch
+):
     with pytest.raises(ValueError, match="还没有复核过的标签"):
         save_crosscheck(session, "P02", {})
     decisions = accept_all(session, discard={4})
@@ -322,8 +324,22 @@ def test_crosscheck_is_a_fixed_sample_by_another_person_tied_to_the_reviewed_lab
     assert load_crosscheck(session, "P02") == ({0: AGREE, 2: DISAGREE}, {2: "第二下偏晚"})
     rows = list_recordings(session.path.parent.parent)[0]["crosschecks"]
     assert [row["current"] for row in rows] == [True, True]
+    # Saving the same review once more, later and by a newer version, changes no file: the
+    # cross-checks were made on exactly these labels and still stand.
+    files = [session.sidecar(suffix) for suffix in (".labels.json", ".review.json")]
+    kept = [path.read_bytes() for path in files]
+    monkeypatch.setattr(contact_review, "_now", lambda: "2030-01-01T00:00:00+00:00")
+    monkeypatch.setattr(contact_review, "__version__", "99.0.0")
+    used = load_reviewed(session)[1]
+    assert save_reviewed(session, "P01", used, decisions) == files[0]
+    assert [path.read_bytes() for path in files] == kept
+    assert load_crosscheck(session, "P02") == ({0: AGREE, 2: DISAGREE}, {2: "第二下偏晚"})
+    save_crosscheck(session, "P03", {1: AGREE})  # The same verdicts again: also untouched.
+    assert "2030-01-01" not in session.sidecar(".crosscheck.P03.json").read_text(encoding="utf-8")
     # The owner reviews again: verdicts on the old labels no longer apply.
+    assert used != Margins(shift=0.05)
     save_reviewed(session, "P01", Margins(shift=0.05), decisions)
+    assert files[0].read_bytes() != kept[0] and "2030-01-01" in files[0].read_text("utf-8")
     assert load_crosscheck(session, "P02") == ({}, {})
 
     # On a full session the sample is about a tenth, fixed per checker, half Space-marked.
@@ -476,7 +492,7 @@ def test_window_margins_relabel_and_send_accepted_units_back(application, folder
     window.close()
 
 
-def test_window_cross_checks_a_teammates_reviewed_labels(application, folder):
+def test_window_cross_checks_a_teammates_reviewed_labels(application, folder, monkeypatch):
     window = ReviewWindow(folder, "P02")
     assert window.unit is None and "还没有复核过的标签" in window.status_label.text()
     assert not window.accept_button.isEnabled()
@@ -505,14 +521,33 @@ def test_window_cross_checks_a_teammates_reviewed_labels(application, folder):
     assert load_reviewed(owner)[2] == accept_all(owner, discard={4})
     window.close()
 
-    # The owner sees the objection on that unit; saving a new review clears it.
+    # The owner sees the objection on that unit.
     window = ReviewWindow(folder, "P01")
     window.timer.stop()
     window.go(1)
     assert "P02 抽查不同意：松开标得太晚" in window.info_label.text()
     window.go(0)
     assert "抽查不同意" not in window.info_label.text()
+    # Saving again without a change, at a later time, leaves the files as they are, so the
+    # cross-check still stands and the objection stays.
+    monkeypatch.setattr(contact_review, "_now", lambda: "2030-01-01T00:00:00+00:00")
+    kept = {
+        suffix: owner.sidecar(suffix).read_bytes() for suffix in (".labels.json", ".review.json")
+    }
     window.finish()
+    assert "文件没有改动" in window.status_label.text()
+    assert all(owner.sidecar(suffix).read_bytes() == content for suffix, content in kept.items())
+    assert load_crosscheck(owner, "P02")[0] == {0: AGREE, 1: DISAGREE, 2: AGREE, 3: AGREE}
+    window.go(1)
+    assert "P02 抽查不同意：松开标得太晚" in window.info_label.text()
+    # Acting on it and saving writes new labels; the objection was about the old ones.
+    press(window, Qt.Key.Key_X)
+    assert window.decisions[1] == DISCARDED
+    window.finish()
+    assert "已保存" in window.status_label.text()
+    assert owner.sidecar(".labels.json").read_bytes() != kept[".labels.json"]
+    assert "2030-01-01" in owner.sidecar(".labels.json").read_text(encoding="utf-8")
+    assert load_crosscheck(owner, "P02") == ({}, {})
     window.go(1)
     assert "抽查不同意" not in window.info_label.text()
     window.close()
