@@ -33,6 +33,7 @@ MODEL_NAMES = {
 }
 CHANNEL_NAMES = {"middle": "中指", "index": "食指", "ring": "无名指"}
 MAX_CANDIDATES = 24
+MAX_SEEDS = 8
 
 _NETWORK = {
     "frames": 8,
@@ -123,18 +124,25 @@ CHECKS = {
 
 
 def check_settings(spec):
-    """Validated settings with every option filled in: {model, seed, candidates}."""
+    """Validated settings with every option filled in: {model, seeds, candidates}."""
     if not isinstance(spec, dict) or spec.get("schema") != SETTINGS_SCHEMA:
         raise ValueError(f"设置文件格式无效：schema 应为 {SETTINGS_SCHEMA}")
-    unknown = set(spec) - {"schema", "model", "seed", "note", "candidates"}
+    unknown = set(spec) - {"schema", "model", "seed", "seeds", "note", "candidates"}
     if unknown:
         raise ValueError(f"设置文件里有不认识的项：{'、'.join(sorted(unknown))}")
     model = spec.get("model")
     if model not in DEFAULTS:
         raise ValueError(f"model 应为 {'、'.join(DEFAULTS)} 之一")
-    seed = spec.get("seed", 42)
-    if type(seed) is not int or not 0 <= seed < 2**32 - 3:
-        raise ValueError("seed 必须是有效的非负整数")
+    if spec.get("seed") is not None and spec.get("seeds") is not None:
+        raise ValueError("seed 和 seeds 只能写一个；要跑多个种子时把它们写进 seeds")
+    seeds = spec.get("seeds")
+    if seeds is None:
+        seeds = [spec.get("seed", 42)]
+    if not isinstance(seeds, list) or not 1 <= len(seeds) <= MAX_SEEDS:
+        raise ValueError(f"seeds 需要 1 到 {MAX_SEEDS} 个种子")
+    for seed in seeds:
+        if type(seed) is not int or not 0 <= seed < 2**32 - 3:
+            raise ValueError("种子必须是有效的非负整数")
     listed = spec.get("candidates")
     if not isinstance(listed, list) or not 1 <= len(listed) <= MAX_CANDIDATES:
         raise ValueError(f"candidates 需要 1 到 {MAX_CANDIDATES} 组设置")
@@ -165,7 +173,7 @@ def check_settings(spec):
                     f"不能同时用 {'、'.join(unusable)}"
                 )
         candidates.append({"name": name, "options": options})
-    return {"model": model, "seed": seed, "candidates": candidates}
+    return {"model": model, "seeds": seeds, "candidates": candidates}
 
 
 def read_settings(path):
@@ -384,8 +392,16 @@ def _mean(values):
     return float(np.mean(known)) if known else None
 
 
-def _average(results):
-    """Mean of a list of `_result` dictionaries, key by key."""
+def _count(values):
+    """The mean of counts, as a whole number: the same rounded window count for every seed."""
+    known = [value for value in values if value is not None]
+    return int(round(float(np.mean(known)))) if known else None
+
+
+def _average_results(results):
+    """Mean of a list of `_result` dictionaries, keeping the shape of `_result`."""
+    if len(results) == 1:
+        return results[0]
     rounds = sorted({number for item in results for number in item["rounds"]}, key=int)
     steps = sorted({name for item in results for name in item["steps"]})
     return {
@@ -398,22 +414,63 @@ def _average(results):
             for channel in CHANNELS
         },
         "rounds": {
-            number: _mean([item["rounds"].get(number, {}).get("macro_f1") for item in results])
+            number: {
+                "windows": _count(
+                    [
+                        item["rounds"][number]["windows"]
+                        for item in results
+                        if number in item["rounds"]
+                    ]
+                ),
+                "f1": {
+                    channel: _mean(
+                        [
+                            item["rounds"][number]["f1"][channel]
+                            for item in results
+                            if number in item["rounds"]
+                        ]
+                    )
+                    for channel in CHANNELS
+                },
+                "macro_f1": _mean(
+                    [item["rounds"].get(number, {}).get("macro_f1") for item in results]
+                ),
+            }
             for number in rounds
         },
         "steps": {
             name: {
-                channel: _mean(
-                    [
-                        item["steps"][name]["error_rate"][channel]
-                        for item in results
-                        if name in item["steps"]
-                    ]
-                )
-                for channel in CHANNELS
+                "windows": _count(
+                    [item["steps"][name]["windows"] for item in results if name in item["steps"]]
+                ),
+                "error_rate": {
+                    channel: _mean(
+                        [
+                            item["steps"][name]["error_rate"][channel]
+                            for item in results
+                            if name in item["steps"]
+                        ]
+                    )
+                    for channel in CHANNELS
+                },
             }
             for name in steps
         },
+    }
+
+
+def _average(results):
+    """Mean of a list of `_result` dictionaries: one number per round, one rate per step.
+
+    Several seeds of one candidate are reported this way; an averaged result that is to be
+    averaged again, as a test fold over the seeds is, keeps its shape in `_average_results`.
+    """
+    averaged = _average_results(results)
+    return {
+        "macro_f1": averaged["macro_f1"],
+        "channels": averaged["channels"],
+        "rounds": {number: item["macro_f1"] for number, item in averaged["rounds"].items()},
+        "steps": {name: item["error_rate"] for name, item in averaged["steps"].items()},
     }
 
 
@@ -436,14 +493,15 @@ def fit_for_live(pool, settings, name, *, exclude=None, epochs=None, allow_synth
 
     Nobody is scored. This is the fit the final test makes for the fold that holds `exclude`
     out; with the `epochs` that fold reports, a temporal CNN comes out the same. `arrays`
-    holds a network's weights and normalization, and is None for a rule.
+    holds a network's weights and normalization, and is None for a rule. One seed is fitted,
+    the first of the settings' `seeds`, since a live model is one network, not an average.
     """
     meta = pool.metadata
     if meta["source"] == "synthetic" and not allow_synthetic:
         raise ValueError("合成数据默认拒绝；仅工程验证可加 --allow-synthetic")
     if meta["labels"] != "reviewed":
         raise ValueError("草稿标签不能用来导出实时控制用的模型；先完成标签检查")
-    model, seed = settings["model"], settings["seed"]
+    model, seed = settings["model"], settings["seeds"][0]
     if model not in LIVE_MODELS:
         raise ValueError("实时控制目前只支持调过阈值的规则和时序 CNN")
     listed = {candidate["name"]: candidate["options"] for candidate in settings["candidates"]}
@@ -518,12 +576,12 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
                 raise ValueError(
                     f"{person} 的{CHANNEL_NAMES[channel]}标签只有一种取值，无法训练或评分"
                 )
-    model, seed, candidates = settings["model"], settings["seed"], settings["candidates"]
+    model, seeds, candidates = settings["model"], settings["seeds"], settings["candidates"]
     for candidate in candidates:
         if candidate["options"]["frames"] > pool.frames:
             raise ValueError(f"设置「{candidate['name']}」的 frames 不能超过 {pool.frames}")
 
-    def training(excluded, options):
+    def training(excluded, options, seed):
         return _training(pool, index, excluded, options, seed)
 
     def target(person):
@@ -531,45 +589,61 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
 
     # One fit serves two folds. Fitted without a and b, its score on a belongs to the fold
     # that holds out b, and its score on b to the fold that holds out a. A network keeps a
-    # separate best epoch for each of the two, chosen by that person's loss alone.
+    # separate best epoch for each of the two, chosen by that person's loss alone. The whole
+    # protocol is run once per seed, so that what is reported is not one lucky draw.
     runs = [(a, b) for a in people for b in people if a < b]
     inner, count = [], 0
     for candidate in candidates:
-        options, results = candidate["options"], {}
-        for a, b in runs:
-            started = time.perf_counter()
-            rows, keypoints = training((a, b), options)
-            scores, details = _fit_and_score(
-                model,
-                options,
-                seed,
-                pool.windows(rows),
-                pool.y[rows],
-                {a: target(a), b: target(b)},
-                select=True,
-                keypoints=keypoints,
-            )
-            for validation, held_out in ((a, b), (b, a)):
-                results[(held_out, validation)] = {
-                    "held_out": held_out,
-                    "validation": validation,
-                    "trained_on": [p for p in people if p not in (a, b)],
-                    "training_windows": len(rows),
-                    "selected_epoch": details.get("selected_epoch", {}).get(validation),
-                    **_result(pool, index[validation], scores[validation]),
-                }
-            count += 1
-            say(
-                f"[{count}/{len(candidates) * len(runs)}] {candidate['name']}："
-                f"不含 {a}、{b} 的训练完成，{time.perf_counter() - started:.1f} 秒"
-            )
-        inner.append((results, details))
+        options, per_seed, details = candidate["options"], [], None
+        for seed in seeds:
+            results = {}
+            for a, b in runs:
+                started = time.perf_counter()
+                rows, keypoints = training((a, b), options, seed)
+                scores, details = _fit_and_score(
+                    model,
+                    options,
+                    seed,
+                    pool.windows(rows),
+                    pool.y[rows],
+                    {a: target(a), b: target(b)},
+                    select=True,
+                    keypoints=keypoints,
+                )
+                for validation, held_out in ((a, b), (b, a)):
+                    results[(held_out, validation)] = {
+                        "held_out": held_out,
+                        "validation": validation,
+                        "trained_on": [p for p in people if p not in (a, b)],
+                        "training_windows": len(rows),
+                        "selected_epoch": details.get("selected_epoch", {}).get(validation),
+                        **_result(pool, index[validation], scores[validation]),
+                    }
+                count += 1
+                where = f"种子 {seed}，" if len(seeds) > 1 else ""
+                say(
+                    f"[{count}/{len(candidates) * len(runs) * len(seeds)}] {candidate['name']}："
+                    f"{where}不含 {a}、{b} 的训练完成，{time.perf_counter() - started:.1f} 秒"
+                )
+            per_seed.append(results)
+        inner.append((per_seed, details))
     selected = {
         held_out: int(
             np.argmax(
                 [
-                    np.mean([results[(held_out, v)]["macro_f1"] for v in people if v != held_out])
-                    for results, _ in inner
+                    np.mean(
+                        [
+                            np.mean(
+                                [
+                                    results[(held_out, v)]["macro_f1"]
+                                    for v in people
+                                    if v != held_out
+                                ]
+                            )
+                            for results in per_seed
+                        ]
+                    )
+                    for per_seed, _ in inner
                 ]
             )
         )
@@ -578,11 +652,29 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
     reference = {
         person: _result(pool, index[person], pool.rules[index[person]]) for person in people
     }
+    candidates_report = []
+    for number, (candidate, (per_seed, details)) in enumerate(zip(candidates, inner)):
+        fits = [item for results in per_seed for item in results.values()]
+        candidates_report.append(
+            {
+                "name": candidate["name"],
+                "options": candidate["options"],
+                "parameters": details.get("parameters"),
+                "pretraining": details.get("pretraining"),
+                "validation": _average(fits),
+                # One mean per seed, so that a reader can see the spread the mean came from.
+                "per_seed_macro_f1": [
+                    _average(list(results.values()))["macro_f1"] for results in per_seed
+                ],
+                "selected_for": [person for person in people if selected[person] == number],
+                "fits": fits,
+            }
+        )
     report = {
         "schema": REPORT_SCHEMA,
         "app_version": __version__,
         "model": model,
-        "seed": seed,
+        "seeds": seeds,
         "source": meta["source"],
         "labels": meta["labels"],
         "evidence": "synthetic_engineering"
@@ -603,18 +695,7 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
         "recordings": len(meta["recordings"]),
         "windows": len(pool),
         "threshold": 0.5,
-        "candidates": [
-            {
-                "name": candidate["name"],
-                "options": candidate["options"],
-                "parameters": details.get("parameters"),
-                "pretraining": details.get("pretraining"),
-                "validation": _average(list(results.values())),
-                "selected_for": [person for person in people if selected[person] == number],
-                "fits": list(results.values()),
-            }
-            for number, (candidate, (results, details)) in enumerate(zip(candidates, inner))
-        ],
+        "candidates": candidates_report,
         "fixed_rules_validation": _average(list(reference.values())),
         "test": None,
     }
@@ -625,38 +706,53 @@ def run_cv(pool, settings, *, final_test=False, allow_synthetic=False, progress=
         candidate = candidates[selected[held_out]]
         options = dict(candidate["options"])
         epochs = [
-            inner[selected[held_out]][0][(held_out, v)]["selected_epoch"]
+            results[(held_out, v)]["selected_epoch"]
+            for results in inner[selected[held_out]][0]
             for v in people
             if v != held_out
         ]
         if all(value is not None for value in epochs):
             # No validation person is left to stop on, so use what the fold's validation chose.
             options["epochs"] = max(1, round(float(np.mean(epochs))))
-        rows, keypoints = training((held_out,), options)
-        scores, _ = _fit_and_score(
-            model,
-            options,
-            seed,
-            pool.windows(rows),
-            pool.y[rows],
-            {held_out: target(held_out)},
-            select=False,
-            keypoints=keypoints,
-        )
+        rounds = []
+        for seed in seeds:
+            rows, keypoints = training((held_out,), options, seed)
+            scores, _ = _fit_and_score(
+                model,
+                options,
+                seed,
+                pool.windows(rows),
+                pool.y[rows],
+                {held_out: target(held_out)},
+                select=False,
+                keypoints=keypoints,
+            )
+            rounds.append(
+                {
+                    "training_windows": len(rows),
+                    **_result(pool, index[held_out], scores[held_out]),
+                }
+            )
         folds.append(
             {
                 "held_out": held_out,
                 "candidate": candidate["name"],
                 "options": options,
-                "training_windows": len(rows),
-                **_result(pool, index[held_out], scores[held_out]),
+                "training_windows": rounds[0]["training_windows"],
+                **_average_results(rounds),
+                "per_seed_macro_f1": [item["macro_f1"] for item in rounds],
                 "fixed_rules": reference[held_out],
             }
         )
-        say(f"测试：留出 {held_out}，用设置「{candidate['name']}」")
+        where = f"，种子 {len(seeds)} 个" if len(seeds) > 1 else ""
+        say(f"测试：留出 {held_out}，用设置「{candidate['name']}」{where}")
     report["test"] = {
         "folds": folds,
         **_average(folds),
+        "per_seed_macro_f1": [
+            _mean([fold["per_seed_macro_f1"][number] for fold in folds])
+            for number in range(len(seeds))
+        ],
         "macro_f1_std": float(np.std([fold["macro_f1"] for fold in folds])),
         "fixed_rules": _average([fold["fixed_rules"] for fold in folds]),
     }
@@ -667,10 +763,15 @@ def _cell(value):
     return "–" if value is None else f"{value:.3f}"
 
 
-def _scores_row(label, scores, tail=""):
-    cells = [_cell(scores["macro_f1"])] + [
-        _cell(scores["channels"][channel]["f1"]) for channel in CHANNELS
-    ]
+def _spread(values):
+    """「0.815–0.853」, the lowest and highest of the seeds' own means, or None if one seed."""
+    known = [value for value in values or [] if value is not None]
+    return f"{min(known):.3f}–{max(known):.3f}" if len(known) > 1 else None
+
+
+def _scores_row(label, scores, tail="", spread=None):
+    mean = _cell(scores["macro_f1"]) + (f"（{spread}）" if spread else "")
+    cells = [mean] + [_cell(scores["channels"][channel]["f1"]) for channel in CHANNELS]
     return f"| {label} | " + " | ".join(cells) + (f" | {tail} |" if tail else " |")
 
 
@@ -695,6 +796,14 @@ def markdown(report):
         "## 验证",
         "",
         "每次留出一人不参与，在其余的人里轮流用一人验证、用剩下的人训练。下表是各次验证的平均 F1。",
+    ]
+    if len(report["seeds"]) > 1:
+        lines += [
+            "",
+            f"每种设置都用种子 {'、'.join(str(seed) for seed in report['seeds'])} 各跑了一遍整个流程，"
+            "下表是这些结果的平均；括号里是各种子自己的平均范围。",
+        ]
+    lines += [
         "",
         "| 设置 | 平均 | 中指 | 食指 | 无名指 | 被几折选中 |",
         "|---|---|---|---|---|---|",
@@ -702,7 +811,10 @@ def markdown(report):
     for candidate in report["candidates"]:
         lines.append(
             _scores_row(
-                candidate["name"], candidate["validation"], str(len(candidate["selected_for"]))
+                candidate["name"],
+                candidate["validation"],
+                str(len(candidate["selected_for"])),
+                _spread(candidate.get("per_seed_macro_f1")),
             )
         )
     lines.append(_scores_row("产品现有的固定规则（参考）", report["fixed_rules_validation"], "–"))
@@ -782,8 +894,22 @@ def markdown(report):
         ]
         for fold in test["folds"]:
             label = f"{fold['held_out']} | {fold['candidate']}"
-            lines.append(_scores_row(label, fold, _cell(fold["fixed_rules"]["macro_f1"])))
-        lines.append(_scores_row("平均 | –", test, _cell(test["fixed_rules"]["macro_f1"])))
+            lines.append(
+                _scores_row(
+                    label,
+                    fold,
+                    _cell(fold["fixed_rules"]["macro_f1"]),
+                    _spread(fold.get("per_seed_macro_f1")),
+                )
+            )
+        lines.append(
+            _scores_row(
+                "平均 | –",
+                test,
+                _cell(test["fixed_rules"]["macro_f1"]),
+                _spread(test.get("per_seed_macro_f1")),
+            )
+        )
         lines += ["", f"各折平均 F1 的标准差：{test['macro_f1_std']:.3f}。"]
     return "\n".join(lines) + "\n"
 

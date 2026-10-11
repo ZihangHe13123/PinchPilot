@@ -78,7 +78,7 @@ def test_settings_fill_defaults_and_name_what_is_wrong():
     settings = check_settings(
         spec("forest", {"name": " 基础 "}, {"name": "深", "depth": 20}, seed=7)
     )
-    assert settings["model"] == "forest" and settings["seed"] == 7
+    assert settings["model"] == "forest" and settings["seeds"] == [7]
     assert [item["name"] for item in settings["candidates"]] == ["基础", "深"]
     assert settings["candidates"][0]["options"] == contact_cv.DEFAULTS["forest"]
     assert settings["candidates"][1]["options"]["depth"] == 20
@@ -112,6 +112,21 @@ def test_settings_fill_defaults_and_name_what_is_wrong():
     with pytest.raises(ValueError, match="schema"):
         check_settings({"model": "forest", "candidates": [{"name": "a"}]})
     assert check_settings(spec("cnn", {"name": "a", "positive_weight": "balanced"}))
+    # One seed by default; `seeds` runs the whole protocol once per seed and cannot be mixed
+    # with the single `seed`.
+    assert check_settings(spec("cnn", {"name": "a"}))["seeds"] == [42]
+    assert check_settings(spec("cnn", {"name": "a"}, seeds=[7, 42]))["seeds"] == [7, 42]
+    with pytest.raises(ValueError, match="seed 和 seeds 只能写一个"):
+        check_settings(spec("cnn", {"name": "a"}, seed=7, seeds=[7, 42]))
+    for bad in (
+        {"seeds": []},
+        {"seeds": 7},
+        {"seeds": [7] * 9},
+        {"seeds": [7, -1]},
+        {"seeds": [7, 8.0]},
+    ):
+        with pytest.raises(ValueError, match="seeds|种子"):
+            check_settings(spec("cnn", {"name": "a"}, **bad))
 
 
 def test_shipped_settings_files_are_valid_and_cover_the_two_finger_cnn_controls():
@@ -544,6 +559,37 @@ def test_finger_cnn_with_varied_hands_runs_the_whole_protocol():
     text = markdown(report)
     assert text.count("rotate=180") == 1 and text.count("rotate=") == 2
     assert text.count("scale_jitter=0.1") == 1 and text.count("noise=0.01") == 1
+
+
+def test_every_seed_runs_the_whole_protocol_and_the_report_gives_their_range():
+    pytest.importorskip("torch")
+    base = {"channels": 8, "epochs": 2, "learning_rate": 0.01, "batch_size": 16, "stride": 1}
+    settings = check_settings(
+        spec("finger_cnn", {"name": "旋转", **base, "rotate": 180}, seeds=[3, 4])
+    )
+    report = run_cv(fake_pool(), settings, final_test=True)
+    candidate = report["candidates"][0]
+    assert report["seeds"] == settings["seeds"] == [3, 4]
+    assert len(candidate["fits"]) == 12  # The six fits of the protocol, once per seed.
+    assert len(candidate["per_seed_macro_f1"]) == 2
+    assert candidate["validation"]["macro_f1"] == pytest.approx(
+        np.mean(candidate["per_seed_macro_f1"])
+    )
+    fold = report["test"]["folds"][0]
+    assert len(fold["per_seed_macro_f1"]) == 2
+    assert fold["macro_f1"] == pytest.approx(np.mean(fold["per_seed_macro_f1"]))
+    assert report["test"]["macro_f1_std"] == pytest.approx(
+        np.std([item["macro_f1"] for item in report["test"]["folds"]])
+    )
+    spread = f"{min(candidate['per_seed_macro_f1']):.3f}–{max(candidate['per_seed_macro_f1']):.3f}"
+    text = markdown(report)
+    assert f"（{spread}）" in text and "种子 3、4" in text
+    # One seed stays as it was: no range and no sentence about seeds.
+    single = check_settings(spec("finger_cnn", {"name": "旋转", **base, "rotate": 180}))
+    assert "种子" not in markdown(run_cv(fake_pool(), single))
+    assert [item["per_seed_macro_f1"] for item in run_cv(fake_pool(), settings)["candidates"]] == [
+        candidate["per_seed_macro_f1"]
+    ]
 
 
 def test_cnn_on_distances_only_and_with_varied_hands_runs_the_whole_protocol():

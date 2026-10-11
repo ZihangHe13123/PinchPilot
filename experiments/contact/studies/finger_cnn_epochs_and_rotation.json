@@ -1,0 +1,13 @@
+{
+  "schema": "pinchpilot-contact-settings-v1",
+  "model": "finger_cnn",
+  "seeds": [42, 7, 99],
+  "note": "旋转对照：手指共享 CNN 加上训练时的旋转时，轮数也一起从15轮改成了30轮，所以提高里混了「多跑一倍轮数」这一项。这份文件把轮数和旋转分开：调优后的设置分别在15轮和30轮下各跑一次，带旋转的也在同样两个轮数下各跑一次，再加上旋转＋缩放＋噪声。用种子42、7、99各跑一遍整个流程，报的是三次的平均。只用来看验证结果，不用来选最终设置。",
+  "candidates": [
+    {"name": "调优后（15 轮）", "channels": 40, "epochs": 15, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": true, "context": true},
+    {"name": "调优后（30 轮）", "channels": 40, "epochs": 30, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": true, "context": true},
+    {"name": "旋转（15 轮）", "channels": 40, "epochs": 15, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": true, "context": true, "rotate": 180},
+    {"name": "旋转（30 轮）", "channels": 40, "epochs": 30, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": true, "context": true, "rotate": 180},
+    {"name": "旋转＋缩放＋噪声（30 轮）", "channels": 40, "epochs": 30, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": true, "context": true, "rotate": 180, "scale_jitter": 0.15, "noise": 0.03}
+  ]
+}
