@@ -23,6 +23,7 @@ from .contact_data import (
     _labels,
     _read_json,
     _sha,
+    _text_sha,
     is_protocol_draft,
     read_contact_recording,
     rule_contacts,
@@ -105,12 +106,17 @@ def _entries(source):
 
 
 def _key(entries, source, config, allow_draft):
-    """Changes whenever any input file, the window settings or the draft switch changes."""
+    """Changes whenever any input file, the window settings or the draft switch changes.
+
+    Labels and protocol records are text, hashed with line endings set aside, so that one
+    data set has one fingerprint on every machine.
+    """
     files = []
     for entry in entries:
         for path in entry.values():
             if path is not None:
-                files.append([path.relative_to(source).as_posix(), _sha(path)])
+                digest = _text_sha(path) if path.suffix == ".json" else _sha(path)
+                files.append([path.relative_to(source).as_posix(), digest])
     payload = {
         "schema": POOL_SCHEMA,
         "app_version": __version__,

@@ -214,3 +214,18 @@ def test_cache_is_reused_until_an_input_changes(tmp_path, monkeypatch):
     assert changed.metadata["labels"] == "reviewed"
     assert changed.metadata["fingerprint"] != built.metadata["fingerprint"]
     assert len(list(cache.glob("pool-*.npz"))) == 2
+
+    # A Windows checkout gives the same labels CRLF line endings: still the same data set.
+    sidecar = archive.with_name(f"{archive.stem}.labels.json")
+    spec = json.loads(sidecar.read_text(encoding="utf-8"))
+    sidecar.write_bytes(json.dumps(spec, indent=2).encode())
+    indented = load_contact_pool(data, allow_draft=True, cache=cache)
+    assert indented.metadata["fingerprint"] != changed.metadata["fingerprint"]
+    plain = sidecar.read_bytes()
+    assert b"\r\n" not in plain and plain.count(b"\n") > 10
+    sidecar.write_bytes(plain.replace(b"\n", b"\r\n"))
+    with monkeypatch.context() as patch:
+        patch.setattr(contact_pool, "_build", refuse)
+        windows = load_contact_pool(data, allow_draft=True, cache=cache)
+    assert windows.metadata["fingerprint"] == indented.metadata["fingerprint"]
+    assert len(list(cache.glob("pool-*.npz"))) == 3
