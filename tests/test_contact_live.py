@@ -111,6 +111,60 @@ def test_exported_cnn_gives_the_scores_of_the_trained_network_without_torch(tmp_
     assert np.allclose(model.scores(x), nets.predict(network, inputs.astype(np.float32)), atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    "switches",
+    [
+        {"shared": True, "context": True},
+        {"shared": False, "context": True},
+        {"shared": True, "context": False, "frames": 2},
+        {"shared": False, "context": False, "frames": 5, "rotate": 180, "noise": 0.01},
+    ],
+)
+def test_exported_finger_cnn_gives_the_scores_of_the_trained_network_without_torch(
+    tmp_path, switches
+):
+    pytest.importorskip("torch")
+    pool = fake_pool()
+    settings = check_settings(spec("finger_cnn", {"name": "网络", **NET, **switches}))
+    record, arrays = fit_for_live(pool, settings, "网络", exclude="P03", epochs=4)
+    assert record["model"] == "finger_cnn" and record["trained_on"] == ["P01", "P02"]
+    copies = 1 if switches["shared"] else 3
+    assert sum(name.endswith("conv1.weight") for name in arrays) == copies
+    assert record["parameters"] == sum(
+        v.size for k, v in arrays.items() if k not in ("mean", "scale")
+    )
+
+    options = record["options"]
+    index = {p: np.flatnonzero(pool.participants == p) for p in ("P01", "P02", "P03")}
+    rows, _ = contact_cv._training(pool, index, ("P03",), options, 42)
+    x = windows()
+    expected, _ = contact_cv._fit_and_score(
+        "finger_cnn", options, 42, pool.windows(rows), pool.y[rows], {"t": (x, None)}, False
+    )
+    model = load_live_model(save_live_model(record, arrays, tmp_path / "fingers"))
+    assert model.kind == "finger_cnn"
+    assert np.allclose(model.scores(x), expected["t"], atol=1e-5)
+    assert np.array_equal(model.decide(x), expected["t"] >= 0.5)
+    assert 0.02 < model.decide(x).mean() < 0.98
+    assert contact_live.label(model) == "手指共享 CNN · 训练时不含 P03 · 网络"
+
+    # Its weights are checked like the temporal CNN's.
+    saved = json.loads((tmp_path / "fingers" / "model.json").read_text(encoding="utf-8"))
+    head = "heads.0.weight"
+    for change, message in (
+        ({head: arrays[head][:, :-1]}, "形状与设置不符"),
+        ({"bias": np.array([0.0, np.nan, 0.0], dtype=np.float32)}, "无效数值"),
+        ({"scale": -arrays["scale"]}, "归一化参数无效"),
+        ({"branches.7.conv1.bias": np.zeros(8, dtype=np.float32)}, "缺少字段或有多余字段"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            LiveModel(saved, {**arrays, **change})
+    with pytest.raises(ValueError, match="shared、context 设置无效"):
+        LiveModel({**saved, "options": {**options, "shared": 1}}, arrays)
+    with pytest.raises(ValueError, match="缺少字段"):
+        LiveModel(saved, None)
+
+
 def test_live_runtime_needs_neither_torch_nor_sklearn(tmp_path):
     record = {
         "schema": contact_live.SCHEMA,
@@ -174,15 +228,14 @@ def test_what_cannot_be_exported_or_loaded_is_refused(tmp_path):
         fit_for_live(pool, rules, "别的")
     with pytest.raises(ValueError, match="没有编号为 P09 的人"):
         fit_for_live(pool, rules, "规则", exclude="P09")
-    with pytest.raises(ValueError, match="epochs 只用于时序 CNN"):
+    with pytest.raises(ValueError, match="epochs 只用于两个 CNN"):
         fit_for_live(pool, rules, "规则", epochs=5)
     with pytest.raises(ValueError, match="草稿标签不能用来导出"):
         fit_for_live(fake_pool(labels="draft"), rules, "规则")
     with pytest.raises(ValueError, match="合成数据默认拒绝"):
         fit_for_live(fake_pool(source="synthetic"), rules, "规则")
-    for model in ("forest", "finger_cnn"):
-        with pytest.raises(ValueError, match="只支持调过阈值的规则和时序 CNN"):
-            fit_for_live(pool, check_settings(spec(model, {"name": "规则"})), "规则")
+    with pytest.raises(ValueError, match="只支持调过阈值的规则、时序 CNN 和手指共享 CNN"):
+        fit_for_live(pool, check_settings(spec("forest", {"name": "规则"})), "规则")
 
     record, _ = fit_for_live(pool, rules, "规则")
     folder = save_live_model(record, None, tmp_path / "ok")

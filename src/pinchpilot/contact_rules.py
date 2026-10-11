@@ -1,7 +1,7 @@
-"""What the tuned rule measures in a window of contact features. NumPy only.
+"""Geometry on windows of contact features that training and live control share. NumPy only.
 
-Shared by the offline comparison and by live control, so that a rule decides the same
-windows the same way in both.
+What the tuned rule measures, and the per-finger views the finger-shared CNN reads. Kept in
+one place so that both sides compute them the same way.
 """
 
 import numpy as np
@@ -59,3 +59,36 @@ def decide(x, options, thresholds):
     if options.get("nearest"):
         touching = nearer_only(touching, ratios(x, options))
     return touching
+
+
+THUMB = (1, 2, 3, 4)
+# MediaPipe joints of the finger behind each output, in the order of CHANNELS.
+FINGERS = ((9, 10, 11, 12), (5, 6, 7, 8), (13, 14, 15, 16))
+FINGER_FEATURES = 29
+
+
+def finger_inputs(x):
+    """[N, T, 67] windows -> [N, 3, T, 29]: for each finger, only the thumb and that finger.
+
+    Per frame: the thumb's four joints (12), the finger's four joints (12), fingertip minus
+    thumb tip (3), that finger's distance ratio (1) and the frame interval (1).
+    """
+    count, frames, _ = x.shape
+    points = x[:, :, :63].reshape(count, frames, 21, 3)
+    thumb = points[:, :, THUMB, :].reshape(count, frames, 12)
+    views = []
+    for channel, joints in enumerate(FINGERS):
+        finger = points[:, :, joints, :]
+        views.append(
+            np.concatenate(
+                (
+                    thumb,
+                    finger.reshape(count, frames, 12),
+                    finger[:, :, 3] - points[:, :, 4],
+                    x[:, :, 63 + channel : 64 + channel],
+                    x[:, :, 66:67],
+                ),
+                axis=2,
+            )
+        )
+    return np.stack(views, axis=1).astype(np.float32)
