@@ -23,7 +23,7 @@ from .contact_rules import distances as _distances
 SETTINGS_SCHEMA = "pinchpilot-contact-settings-v1"
 LIVE_SCHEMA = "pinchpilot-live-contacts-v1"
 # The models live control can run without PyTorch.
-LIVE_MODELS = ("rules", "cnn")
+LIVE_MODELS = ("rules", "cnn", "finger_cnn")
 REPORT_SCHEMA = "pinchpilot-contact-cv-v1"
 MODEL_NAMES = {
     "rules": "调过阈值的规则",
@@ -343,7 +343,7 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None, 
         if select:
             network.load_state_dict(states[name], strict=True)
         scores[name] = nets.predict(network, values)
-    if keep is not None and model == "cnn":
+    if keep is not None:
         keep["mean"], keep["scale"] = np.asarray(mean), np.asarray(scale)
         keep["weights"] = {
             name: value.detach().numpy().copy() for name, value in network.state_dict().items()
@@ -503,7 +503,7 @@ def fit_for_live(pool, settings, name, *, exclude=None, epochs=None, allow_synth
         raise ValueError("草稿标签不能用来导出实时控制用的模型；先完成标签检查")
     model, seed = settings["model"], settings["seeds"][0]
     if model not in LIVE_MODELS:
-        raise ValueError("实时控制目前只支持调过阈值的规则和时序 CNN")
+        raise ValueError("实时控制目前只支持调过阈值的规则、时序 CNN 和手指共享 CNN")
     listed = {candidate["name"]: candidate["options"] for candidate in settings["candidates"]}
     if name not in listed:
         raise ValueError(f"设置文件里没有名为「{name}」的设置；可选：{'、'.join(listed)}")
@@ -512,8 +512,8 @@ def fit_for_live(pool, settings, name, *, exclude=None, epochs=None, allow_synth
     if exclude is not None and exclude not in people:
         raise ValueError(f"数据里没有编号为 {exclude} 的人；可选：{'、'.join(people)}")
     if epochs is not None:
-        if model != "cnn" or not CHECKS["epochs"](epochs):
-            raise ValueError("epochs 只用于时序 CNN，取 1 到 500 的整数")
+        if model == "rules" or not CHECKS["epochs"](epochs):
+            raise ValueError("epochs 只用于两个 CNN，取 1 到 500 的整数")
         options["epochs"] = epochs
     if options["frames"] > pool.frames:
         raise ValueError(f"设置「{name}」的 frames 不能超过 {pool.frames}")

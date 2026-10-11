@@ -96,7 +96,7 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--settings", type=Path, required=True, help="这个模型的设置文件")
     export.add_argument("--candidate", required=True, help="设置文件里那一组设置的 name")
     export.add_argument("--exclude", help="不参与训练的人的编号，例如 P02；不填则用全部的人")
-    export.add_argument("--epochs", type=int, help="时序 CNN 训练几轮；不填用设置文件里的值")
+    export.add_argument("--epochs", type=int, help="CNN 训练几轮；不填用设置文件里的值")
     export.add_argument("--output", type=Path, required=True, help="需要一个新目录")
     export.add_argument("--allow-synthetic", action="store_true", help="只为工程验证使用合成数据")
     export.add_argument("--cache", type=Path, default=Path("data/cache/contact_pool"))

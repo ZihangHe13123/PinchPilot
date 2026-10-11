@@ -1,4 +1,4 @@
-"""Contact decisions for live control from a fitted rule or temporal CNN. NumPy only.
+"""Contact decisions for live control from a fitted rule or small CNN. NumPy only.
 
 A fitted model is a folder with `model.json` and, for a network, `weights.npz`, written by
 `save_live_model` from what `contact_cv.fit_for_live` returns. Nothing here needs PyTorch or
@@ -66,8 +66,10 @@ class LiveModel:
             self._rule(record)
         elif self.kind == "cnn":
             self._network(arrays)
+        elif self.kind == "finger_cnn":
+            self._fingers(arrays)
         else:
-            raise ValueError("实时控制目前只支持调过阈值的规则和时序 CNN")
+            raise ValueError("实时控制目前只支持调过阈值的规则、时序 CNN 和手指共享 CNN")
 
     def _rule(self, record):
         cuts = record.get("thresholds")
@@ -83,22 +85,84 @@ class LiveModel:
             raise ValueError("规则的设置项无效")
         self.thresholds = np.array(cuts, dtype=np.float64)
 
-    def _network(self, arrays):
-        if self.options.get("inputs") not in ("all", "distances"):
-            raise ValueError("时序 CNN 的 inputs 设置无效")
-        if not isinstance(arrays, dict) or set(arrays) != {*WEIGHTS, "mean", "scale"}:
-            raise ValueError("时序 CNN 的权重文件缺少字段或有多余字段")
+    @staticmethod
+    def _checked(arrays, names, shapes):
+        """Weights with exactly these names, finite, in these shapes, and a usable scale."""
+        if not isinstance(arrays, dict) or set(arrays) != set(names):
+            raise ValueError("权重文件缺少字段或有多余字段")
         if any(
             not isinstance(value, np.ndarray)
             or not np.issubdtype(value.dtype, np.floating)
             or not np.isfinite(value).all()
             for value in arrays.values()
         ):
-            raise ValueError("时序 CNN 的权重里有无效数值")
+            raise ValueError("权重里有无效数值")
+        if any(arrays[name].shape != shape for name, shape in shapes.items()):
+            raise ValueError("权重形状与设置不符")
+        if (arrays["scale"] <= 0).any():
+            raise ValueError("归一化参数无效")
+
+    @staticmethod
+    def _layers(arrays, prefix):
+        """Two causal convolutions as the matrices their last output needs."""
+        w1, w2 = arrays[f"{prefix}conv1.weight"], arrays[f"{prefix}conv2.weight"]
+        return (
+            w1.reshape(len(w1), -1).T.astype(np.float32),
+            arrays[f"{prefix}conv1.bias"],
+            w2.reshape(len(w2), -1).T.astype(np.float32),
+            arrays[f"{prefix}conv2.bias"],
+        )
+
+    def _last_vector(self, x, layers):
+        """What the two convolutions give at the last frame; x is normalized [N, T, F]."""
+        first, first_bias, second, second_bias = layers
+        count, frames, width = x.shape
+        missing = self.kernel + 2 - frames
+        if missing > 0:  # Zeros before the oldest frame, as in training.
+            x = np.pad(x, ((0, 0), (missing, 0), (0, 0)))
+        patches = np.stack([x[:, i : i + 3] for i in range(self.kernel)], axis=1)
+        patches = patches.transpose(0, 1, 3, 2).reshape(count, self.kernel, width * 3)
+        hidden = np.maximum(patches @ first + first_bias, 0)
+        hidden = hidden.transpose(0, 2, 1).reshape(count, -1)
+        return np.maximum(hidden @ second + second_bias, 0)
+
+    def _fingers(self, arrays):
+        shared, context = self.options.get("shared"), self.options.get("context")
+        if type(shared) is not bool or type(context) is not bool:
+            raise ValueError("手指共享 CNN 的 shared、context 设置无效")
+        copies = 1 if shared else 3
+        parts = ("conv1.weight", "conv1.bias", "conv2.weight", "conv2.bias")
+        names = [f"branches.{i}.{part}" for i in range(copies) for part in parts]
+        names += [f"heads.{i}.{part}" for i in range(copies) for part in ("weight", "bias")]
+        first = arrays.get("branches.0.conv1.weight") if isinstance(arrays, dict) else None
+        channels = first.shape[0] if isinstance(first, np.ndarray) and first.ndim == 3 else 0
+        frames, width = self.options["frames"], contact_rules.FINGER_FEATURES
+        self.kernel = max(1, frames - 2)
+        shapes = {"bias": (3,), "mean": (width,), "scale": (width,)}
+        for i in range(copies):
+            shapes[f"branches.{i}.conv1.weight"] = (channels, width, 3)
+            shapes[f"branches.{i}.conv1.bias"] = (channels,)
+            shapes[f"branches.{i}.conv2.weight"] = (channels, channels, self.kernel)
+            shapes[f"branches.{i}.conv2.bias"] = (channels,)
+            shapes[f"heads.{i}.weight"] = (1, channels * 2 if context else channels)
+            shapes[f"heads.{i}.bias"] = (1,)
+        self._checked(arrays, [*names, "bias", "mean", "scale"], shapes)
+        self.mean = arrays["mean"].astype(np.float64)
+        self.scale = arrays["scale"].astype(np.float64)
+        self.branches = [self._layers(arrays, f"branches.{i}.") for i in range(copies)]
+        self.heads = [
+            (arrays[f"heads.{i}.weight"][0].astype(np.float32), arrays[f"heads.{i}.bias"][0])
+            for i in range(copies)
+        ]
+        self.bias, self.context = arrays["bias"], context
+
+    def _network(self, arrays):
+        if self.options.get("inputs") not in ("all", "distances"):
+            raise ValueError("时序 CNN 的 inputs 设置无效")
         self.first = COORDINATES if self.options["inputs"] == "distances" else 0
         width, frames = FEATURE_COUNT - self.first, self.options["frames"]
-        w1, w2, head = arrays["conv1.weight"], arrays["conv2.weight"], arrays["head.weight"]
-        channels = w1.shape[0]
+        first = arrays.get("conv1.weight") if isinstance(arrays, dict) else None
+        channels = first.shape[0] if isinstance(first, np.ndarray) and first.ndim == 3 else 0
         shapes = {
             "conv1.weight": (channels, width, 3),
             "conv1.bias": (channels,),
@@ -109,16 +173,12 @@ class LiveModel:
             "mean": (width,),
             "scale": (width,),
         }
-        if w1.ndim != 3 or any(arrays[name].shape != shape for name, shape in shapes.items()):
-            raise ValueError("时序 CNN 的权重形状与设置不符")
-        if (arrays["scale"] <= 0).any():
-            raise ValueError("时序 CNN 的归一化参数无效")
+        self._checked(arrays, [*WEIGHTS, "mean", "scale"], shapes)
         self.mean = arrays["mean"].astype(np.float64)
         self.scale = arrays["scale"].astype(np.float64)
-        self.first_layer = (w1.reshape(channels, -1).T.astype(np.float32), arrays["conv1.bias"])
-        self.second_layer = (w2.reshape(channels, -1).T.astype(np.float32), arrays["conv2.bias"])
-        self.head = (head.T.astype(np.float32), arrays["head.bias"])
-        self.kernel = w2.shape[2]
+        self.layers = self._layers(arrays, "")
+        self.head = (arrays["head.weight"].T.astype(np.float32), arrays["head.bias"])
+        self.kernel = max(1, frames - 2)
 
     def scores(self, windows):
         """[N, 3] contact scores in [0, 1] for [N, T, 67] windows; a rule gives 0 or 1."""
@@ -128,20 +188,35 @@ class LiveModel:
         if self.kind == "rules":
             touching = contact_rules.decide(windows, self.options, self.thresholds)
             return touching.astype(np.float32)
-        x = windows[:, -self.options["frames"] :, self.first :]
-        x = ((x.astype(np.float64) - self.mean) / self.scale).astype(np.float32)
-        count, frames, width = x.shape
-        missing = self.kernel + 2 - frames
-        if missing > 0:  # Zeros before the oldest frame, as in training.
-            x = np.pad(x, ((0, 0), (missing, 0), (0, 0)))
-        # The two causal convolutions, evaluated only where the last output needs them.
-        patches = np.stack([x[:, i : i + 3] for i in range(self.kernel)], axis=1)
-        patches = patches.transpose(0, 1, 3, 2).reshape(count, self.kernel, width * 3)
-        hidden = np.maximum(patches @ self.first_layer[0] + self.first_layer[1], 0)
-        hidden = hidden.transpose(0, 2, 1).reshape(count, -1)
-        top = np.maximum(hidden @ self.second_layer[0] + self.second_layer[1], 0)
-        logits = (top @ self.head[0] + self.head[1]).astype(np.float64)
-        return (1 / (1 + np.exp(-logits))).astype(np.float32)
+        recent = windows[:, -self.options["frames"] :]
+        if self.kind == "finger_cnn":
+            logits = self._finger_logits(recent)
+        else:
+            x = recent[:, :, self.first :]
+            x = ((x.astype(np.float64) - self.mean) / self.scale).astype(np.float32)
+            logits = self._last_vector(x, self.layers) @ self.head[0] + self.head[1]
+        return (1 / (1 + np.exp(-logits.astype(np.float64)))).astype(np.float32)
+
+    def _finger_logits(self, recent):
+        """One small network per finger over thumb and that finger; see contact_nets."""
+        views = contact_rules.finger_inputs(recent)
+        views = ((views.astype(np.float64) - self.mean) / self.scale).astype(np.float32)
+        vectors = np.stack(
+            [
+                self._last_vector(views[:, i], self.branches[i % len(self.branches)])
+                for i in range(3)
+            ],
+            axis=1,
+        )
+        if self.context:  # Each finger also sees the larger of the other two's values.
+            a, b, c = vectors[:, 0], vectors[:, 1], vectors[:, 2]
+            others = np.stack((np.maximum(b, c), np.maximum(a, c), np.maximum(a, b)), axis=1)
+            vectors = np.concatenate((vectors, others), axis=2)
+        logits = [
+            vectors[:, i] @ self.heads[i % len(self.heads)][0] + self.heads[i % len(self.heads)][1]
+            for i in range(3)
+        ]
+        return np.stack(logits, axis=1) + self.bias
 
     def decide(self, windows):
         """[N, 3] booleans in the order of CHANNELS: touching or not."""
@@ -156,7 +231,7 @@ def load_live_model(directory):
     except (OSError, ValueError, UnicodeError) as error:
         raise ValueError(f"读不到模型文件：{directory / 'model.json'}") from error
     arrays = None
-    if isinstance(record, dict) and record.get("model") == "cnn":
+    if isinstance(record, dict) and record.get("model") in ("cnn", "finger_cnn"):
         weights = directory / "weights.npz"
         if not weights.is_file() or _sha(weights) != record.get("weights_sha256"):
             raise ValueError("权重文件缺失，或与模型文件里记录的校验和不一致")
@@ -168,7 +243,7 @@ def load_live_model(directory):
     return LiveModel(record, arrays)
 
 
-KINDS = {"rules": "调过的规则", "cnn": "时序 CNN"}
+KINDS = {"rules": "调过的规则", "cnn": "时序 CNN", "finger_cnn": "手指共享 CNN"}
 SUMMARY = (
     "model",
     "candidate",
