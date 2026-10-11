@@ -1,6 +1,7 @@
 """Label review, from a guided capture to reviewed labels and a cross-check. Offscreen;
 the camera source is simulated, not human data."""
 
+import hashlib
 import json
 import os
 from dataclasses import replace
@@ -296,6 +297,27 @@ def test_crosscheck_is_a_fixed_sample_by_another_person_tied_to_the_reviewed_lab
     }
     assert load_crosscheck(session, "P02") == ({0: AGREE, 2: DISAGREE}, {2: "第二下偏晚"})
     assert load_crosscheck(session, "P03") == ({}, {})
+    # Git on Windows checks text files out with CRLF line endings. The same labels then have
+    # other bytes, on the checker's machine or on the owner's; the cross-check still holds.
+    labels = session.sidecar(".labels.json")
+    plain = labels.read_bytes()
+    assert b"\r\n" not in plain and plain.count(b"\n") > 10
+    labels.write_bytes(plain.replace(b"\n", b"\r\n"))
+    assert load_crosscheck(session, "P02") == ({0: AGREE, 2: DISAGREE}, {2: "第二下偏晚"})
+    assert contact_review.disagreements(session) == {2: [("P02", "第二下偏晚")]}
+    assert list_recordings(session.path.parent.parent)[0]["crosschecks"][0]["current"] is True
+    save_crosscheck(session, "P03", {1: AGREE})  # Made on the Windows side ...
+    labels.write_bytes(plain)  # ... and read back where the file has LF endings.
+    assert load_crosscheck(session, "P03") == ({1: AGREE}, {})
+    stored = json.loads(session.sidecar(".crosscheck.P03.json").read_text(encoding="utf-8"))
+    assert stored["labels_sha256"] == hashlib.sha256(plain).hexdigest()
+    # A cross-check from before this fix stored the digest of the raw CRLF bytes.
+    old_style = json.loads(target.read_text(encoding="utf-8"))
+    old_style["labels_sha256"] = hashlib.sha256(plain.replace(b"\n", b"\r\n")).hexdigest()
+    target.write_text(json.dumps(old_style), encoding="utf-8")
+    assert load_crosscheck(session, "P02") == ({0: AGREE, 2: DISAGREE}, {2: "第二下偏晚"})
+    rows = list_recordings(session.path.parent.parent)[0]["crosschecks"]
+    assert [row["current"] for row in rows] == [True, True]
     # The owner reviews again: verdicts on the old labels no longer apply.
     save_reviewed(session, "P01", Margins(shift=0.05), decisions)
     assert load_crosscheck(session, "P02") == ({}, {})

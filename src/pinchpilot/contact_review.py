@@ -25,6 +25,7 @@ from .contact_data import (
     CHANNELS,
     _read_json,
     _sha,
+    _text_sha,
     contact_features,
     is_protocol_draft,
     read_contact_recording,
@@ -229,6 +230,17 @@ def load_session(path):
     )
 
 
+def _is_for(recorded, path):
+    """Whether the digest a cross-check recorded refers to this labels file as it is now.
+
+    Cross-checks made before the digest ignored line endings stored the digest of the raw
+    bytes, which on a Windows checkout have CRLF endings.
+    """
+    plain = Path(path).read_bytes().replace(b"\r\n", b"\n")
+    windows = plain.replace(b"\n", b"\r\n")
+    return recorded in (hashlib.sha256(plain).hexdigest(), hashlib.sha256(windows).hexdigest())
+
+
 def shifted_events(session, margins):
     return [(moment - margins.shift, pressed) for moment, pressed in session.events]
 
@@ -383,7 +395,7 @@ def load_reviewed(session):
             _name(spec["annotator"], "复核者"),
             Margins(**review["margins"]),
             decisions,
-            _sha(path),
+            _text_sha(path),
         )
     except (AttributeError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"这段录制还没有复核过的标签：{session.stem}") from error
@@ -454,8 +466,10 @@ def load_crosscheck(session, checker):
     if (
         record.get("schema") != CROSSCHECK_SCHEMA
         or record.get("recording_sha256") != session.recording_sha256
-        or record.get("labels_sha256") != load_reviewed(session)[3]
     ):
+        return {}, {}
+    load_reviewed(session)  # Raises when there are no reviewed labels to compare with.
+    if not _is_for(record.get("labels_sha256"), session.sidecar(".labels.json")):
         return {}, {}  # The labels were reviewed again since; the old verdicts do not apply.
     rows = record.get("verdicts", [])
     return (
@@ -467,14 +481,15 @@ def load_crosscheck(session, checker):
 def disagreements(session):
     """{unit: [(checker, note)]} from cross-checks of the current reviewed labels."""
     try:
-        current = load_reviewed(session)[3]
+        load_reviewed(session)
     except ValueError:
         return {}
+    labels = session.sidecar(".labels.json")
     found = {}
     for path in sorted(session.path.parent.glob(f"{session.stem}.crosscheck.*.json")):
         try:
             record = _read_json(path)
-            if record.get("labels_sha256") != current:
+            if not _is_for(record.get("labels_sha256"), labels):
                 continue
             for row in record["verdicts"]:
                 if row["verdict"] == DISAGREE:
@@ -526,7 +541,7 @@ def list_recordings(folder):
                         "checked": len(record["verdicts"]),
                         "sample": len(record["sample"]),
                         "complete": bool(record["complete"]),
-                        "current": labels.is_file() and record["labels_sha256"] == _sha(labels),
+                        "current": labels.is_file() and _is_for(record["labels_sha256"], labels),
                     }
                 )
             except (ValueError, KeyError, TypeError):

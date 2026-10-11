@@ -200,6 +200,15 @@ def _sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _text_sha(path):
+    """A text file's digest with line endings set aside.
+
+    Git may rewrite line endings on checkout, and does so on Windows by default, so the same
+    labels are different bytes on different machines.
+    """
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 class ContactRecorder:
     """Explicit caller-owned recording, with no automatic labels or hardware access."""
 
