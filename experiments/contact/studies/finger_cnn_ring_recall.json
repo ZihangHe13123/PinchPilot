@@ -1,0 +1,68 @@
+{
+  "schema": "pinchpilot-contact-settings-v1",
+  "model": "finger_cnn",
+  "seeds": [42, 7, 99],
+  "note": "无名指错得最多，而且错了大半是漏判（该接触时判不出来），不是误判。判定门槛固定0.5、分数没校准，所以先试训练这一侧：给接触样本加权，漏判的代价就更大。balanced 按每根手指自己的接触比例加权，手指接触得越少权重越高——无名指和食指的接触比例比中指低，权重会落在它们身上。都以加旋转的调优设置为底。",
+  "candidates": [
+    {
+      "name": "旋转（30 轮）",
+      "frames": 8,
+      "stride": 1,
+      "label_fraction": 1.0,
+      "channels": 40,
+      "epochs": 30,
+      "learning_rate": 0.001,
+      "batch_size": 256,
+      "weight_decay": 0.0001,
+      "positive_weight": 1.0,
+      "shared": true,
+      "context": true,
+      "rotate": 180
+    },
+    {
+      "name": "旋转＋平衡权重",
+      "frames": 8,
+      "stride": 1,
+      "label_fraction": 1.0,
+      "channels": 40,
+      "epochs": 30,
+      "learning_rate": 0.001,
+      "batch_size": 256,
+      "weight_decay": 0.0001,
+      "positive_weight": "balanced",
+      "shared": true,
+      "context": true,
+      "rotate": 180
+    },
+    {
+      "name": "旋转＋权重 2",
+      "frames": 8,
+      "stride": 1,
+      "label_fraction": 1.0,
+      "channels": 40,
+      "epochs": 30,
+      "learning_rate": 0.001,
+      "batch_size": 256,
+      "weight_decay": 0.0001,
+      "positive_weight": 2.0,
+      "shared": true,
+      "context": true,
+      "rotate": 180
+    },
+    {
+      "name": "旋转＋权重 4",
+      "frames": 8,
+      "stride": 1,
+      "label_fraction": 1.0,
+      "channels": 40,
+      "epochs": 30,
+      "learning_rate": 0.001,
+      "batch_size": 256,
+      "weight_decay": 0.0001,
+      "positive_weight": 4.0,
+      "shared": true,
+      "context": true,
+      "rotate": 180
+    }
+  ]
+}
