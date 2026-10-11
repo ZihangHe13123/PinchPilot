@@ -5,42 +5,13 @@ import math
 import numpy as np
 
 from .contact_models import _deterministic_cpu, _last_output, _make_cnn, _torch
+from .contact_rules import FINGER_FEATURES, FINGERS, THUMB
+from .contact_rules import finger_inputs as finger_inputs  # Used through this module too.
 
 COORDINATES = 63
 # What is left of a frame's 67 features without the coordinates: three distance ratios and
 # the frame interval.
 DISTANCE_FEATURES = 4
-THUMB = (1, 2, 3, 4)
-# MediaPipe joints of the finger behind each output, in the order of CHANNELS.
-FINGERS = ((9, 10, 11, 12), (5, 6, 7, 8), (13, 14, 15, 16))
-FINGER_FEATURES = 29
-
-
-def finger_inputs(x):
-    """[N, T, 67] windows -> [N, 3, T, 29]: for each finger, only the thumb and that finger.
-
-    Per frame: the thumb's four joints (12), the finger's four joints (12), fingertip minus
-    thumb tip (3), that finger's distance ratio (1) and the frame interval (1).
-    """
-    count, frames, _ = x.shape
-    points = x[:, :, :63].reshape(count, frames, 21, 3)
-    thumb = points[:, :, THUMB, :].reshape(count, frames, 12)
-    views = []
-    for channel, joints in enumerate(FINGERS):
-        finger = points[:, :, joints, :]
-        views.append(
-            np.concatenate(
-                (
-                    thumb,
-                    finger.reshape(count, frames, 12),
-                    finger[:, :, 3] - points[:, :, 4],
-                    x[:, :, 63 + channel : 64 + channel],
-                    x[:, :, 66:67],
-                ),
-                axis=2,
-            )
-        )
-    return np.stack(views, axis=1).astype(np.float32)
 
 
 def finger_views(x):
