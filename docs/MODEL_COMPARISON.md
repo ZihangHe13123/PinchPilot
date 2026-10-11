@@ -57,6 +57,8 @@ uv run pinchpilot ml-cv C:\Projects\PinchPilot-data\recordings --settings experi
 
 写错项名或数值超出范围时，程序会指出是哪一组的哪一项。
 
+`experiments\contact\studies\` 里是为回答某一个问题准备的设置文件，用法相同，把 `--settings` 换成它即可；例如 `cnn_label_fraction.json` 比较标签少的时候预训练有没有用。这些文件不用来选最终设置。
+
 ## 怎么读结果
 
 - **验证方式**：每次留出一人完全不参与。在剩下的人里，轮流用一人验证、用其余的人训练。三个人时一共 6 次验证，表里是它们的平均值。
