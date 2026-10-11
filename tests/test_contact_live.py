@@ -270,9 +270,10 @@ def test_export_command_writes_a_model_the_app_can_load(tmp_path, capsys):
     assert "输出目录已有内容" in capsys.readouterr().err
 
 
-def rule_folder(folder, index=0.26, ring=0.26):
+def rule_folder(folder, index=0.26, ring=0.26, **extra):
     """A fitted rule with chosen cuts for index and ring, saved where the engine can load it."""
     record = {
+        **extra,
         "schema": contact_live.SCHEMA,
         "model": "rules",
         "options": {"frames": 1, "statistic": "last"},
@@ -384,3 +385,31 @@ def test_engine_refuses_a_model_it_cannot_load(tmp_path):
     folder = rule_folder(tmp_path / "m")
     engine = TripodEngine(TripodConfig(contact_model=folder))
     assert engine.contacts.model.kind == "rules" and TripodEngine().contacts is None
+
+
+def test_models_in_a_folder_are_listed_with_a_line_that_says_who_they_were_fitted_on(tmp_path):
+    root = tmp_path / "contact_models"
+    assert contact_live.find_models(root) == ([], [])
+    one = rule_folder(
+        root / "b", candidate="食指用画面内距离", trained_on=["P02", "P03"], excluded="P01"
+    )
+    rule_folder(root / "a", trained_on=["P01", "P02", "P03"], excluded=None)
+    rule_folder(root / "c")
+    (root / "broken").mkdir()
+    (root / "broken" / "model.json").write_text("{}", encoding="utf-8")
+    (root / "not_a_model").mkdir()
+    (root / "notes.txt").write_text("x", encoding="utf-8")
+    found, problems = contact_live.find_models(root)
+    assert [(text, Path(folder).name) for text, folder, _ in found] == [
+        ("调过的规则 · 用 P01、P02、P03 训练", "a"),
+        ("调过的规则 · 训练时不含 P01 · 食指用画面内距离", "b"),
+        ("调过的规则 · 训练者未记录", "c"),
+    ]
+    assert len(problems) == 1 and problems[0].startswith("broken：")
+    summary = contact_live.describe(load_live_model(one))
+    assert summary == {
+        "model": "rules",
+        "candidate": "食指用画面内距离",
+        "trained_on": ["P02", "P03"],
+        "excluded": "P01",
+    }

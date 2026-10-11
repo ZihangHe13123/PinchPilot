@@ -251,6 +251,12 @@ class DesktopWindow(QMainWindow):
         )
         self.tripod_controls.probe_button.hide()
         advanced_layout.addWidget(self.tripod_controls)
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("接触判定"))
+        self.contact_source = QComboBox()
+        source_row.addWidget(self.contact_source, 1)
+        advanced_layout.addLayout(source_row)
+        self._list_contact_models()
         self.calibration_button = QPushButton("6 秒静止校准")
         self.calibration_button.clicked.connect(self._toggle_calibration)
         advanced_layout.addWidget(self.calibration_button)
@@ -372,6 +378,27 @@ class DesktopWindow(QMainWindow):
             )
         }
 
+    def _list_contact_models(self, keep=""):
+        """Offer the built-in thresholds and every fitted model in the workspace."""
+        from .contact_live import find_models
+
+        models, problems = find_models(self.workspace / "data" / "contact_models")
+        self.contact_source.blockSignals(True)
+        self.contact_source.clear()
+        self.contact_source.addItem("现有规则 · 固定的距离阈值", "")
+        for text, folder, _ in models:
+            self.contact_source.addItem(text, folder)
+        index = self.contact_source.findData(keep)
+        self.contact_source.setCurrentIndex(max(index, 0))
+        self.contact_source.blockSignals(False)
+        tip = (
+            "谁来判断食指、无名指有没有碰到拇指。模型只接管“碰到”这一步，松开仍看距离；"
+            "模型放在工作区的 data/contact_models 文件夹里，每个模型一个子文件夹。"
+        )
+        if problems:
+            tip += "\n读不出来、已跳过：" + "；".join(problems)
+        self.contact_source.setToolTip(tip)
+
     def _restore_settings(self):
         if not self.settings_path.exists():
             return
@@ -401,6 +428,13 @@ class DesktopWindow(QMainWindow):
                 settings.get("rest_noise_x", 0.0), settings.get("rest_noise_y", 0.0)
             )
             self.tripod_controls.restore_wrist_calibration(settings.get("wrist_calibration", ()))
+            chosen = settings.get("contact_model", "")
+            if isinstance(chosen, str) and chosen:
+                index = self.contact_source.findData(chosen)
+                if index >= 0:
+                    self.contact_source.setCurrentIndex(index)
+                else:
+                    self.controller.notice = "上次选的接触模型找不到了，已改回现有规则。"
             if (
                 settings.get("pointer_basis") == "wrist"
                 and settings.get("unified_mode_seen") is not True
@@ -430,6 +464,7 @@ class DesktopWindow(QMainWindow):
         settings["rest_noise_x"] = self.tripod_controls.rest_noise_x
         settings["rest_noise_y"] = self.tripod_controls.rest_noise_y
         settings["wrist_calibration"] = list(self.tripod_controls.wrist_calibration)
+        settings["contact_model"] = self.contact_source.currentData() or ""
         settings["unified_mode_seen"] = True
         settings["camera_index"] = self.camera_index.value()
         settings["control_hand"] = self.control_hand.currentData()
@@ -446,6 +481,7 @@ class DesktopWindow(QMainWindow):
         self.drag.toggled.connect(self._configure)
         self.scroll.toggled.connect(self._configure)
         self.tripod_controls.changed.connect(self._configure)
+        self.contact_source.currentIndexChanged.connect(lambda _: self._configure())
         self.tripod_controls.recenter.connect(self.stop_control)
         self.camera_index.valueChanged.connect(self._camera_changed)
         self.control_hand.currentIndexChanged.connect(self._camera_changed)
@@ -486,16 +522,24 @@ class DesktopWindow(QMainWindow):
             self.practice_window.close()
         screen = QApplication.primaryScreen()
         size = screen.size() if screen is not None else None
-        self.controller.configure(
-            replace(
-                self.tripod_controls.configuration(),
-                screen_width=float(size.width()) if size else 1920.0,
-                screen_height=float(size.height()) if size else 1080.0,
-                right_enabled=self.right.isChecked(),
-                drag_enabled=self.drag.isChecked(),
-                scroll_enabled=self.scroll.isChecked(),
-            )
+        config = replace(
+            self.tripod_controls.configuration(),
+            screen_width=float(size.width()) if size else 1920.0,
+            screen_height=float(size.height()) if size else 1080.0,
+            right_enabled=self.right.isChecked(),
+            drag_enabled=self.drag.isChecked(),
+            scroll_enabled=self.scroll.isChecked(),
+            contact_model=self.contact_source.currentData() or "",
         )
+        try:
+            self.controller.configure(config)
+        except ValueError as error:
+            if not config.contact_model:
+                raise
+            # The chosen model no longer loads: say so and go back to the thresholds.
+            self.controller.configure(replace(config, contact_model=""))
+            self._list_contact_models()
+            self.controller.notice = f"接触模型无法加载，已改回现有规则：{error}"
         self._save_settings()
         self.camera_view.box = self.controller.engine.active_box
         self.camera_view.update()
@@ -985,7 +1029,13 @@ class DesktopWindow(QMainWindow):
 
             self.controller.begin_practice()
             candidate = PracticeWindow(self.workspace, self)
-            candidate.set_config(asdict(self.controller.engine.config))
+            settings = asdict(self.controller.engine.config)
+            if self.controller.engine.contacts is not None:
+                from .contact_live import describe
+
+                # Which model judged the touches, so that a task record can be traced to it.
+                settings["contact_model_summary"] = describe(self.controller.engine.contacts.model)
+            candidate.set_config(settings)
             if self.controller.fresh():
                 candidate.feed(
                     self.controller.result, self.controller.clock(), self.controller.source
