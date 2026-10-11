@@ -39,6 +39,8 @@ uv run pinchpilot ml-cv C:\Projects\PinchPilot-data\recordings --settings experi
 | `stride` | 训练时每几个窗口取一个；相邻窗口很像，取大一些训练更快 | 全部 |
 | `label_fraction` | 只用这一比例的标签训练，例如 0.1；按整段动作抽取。用来比较标签少时谁更稳 | 全部 |
 | `statistic` | 对最近几帧的距离取什么：`last`、`median`、`mean`、`min` | 规则 |
+| `flat_middle`、`flat_index`、`flat_ring` | 填 `true` 时，这根手指改用画面内的距离：还是拇指尖到指尖，但不算估计出来的深度 | 规则 |
+| `nearest` | 填 `true` 时，食指和无名指同时被判为接触的，只保留离拇指更近的那个 | 规则 |
 | `trees`、`depth`、`min_leaf` | 树的数量、树的深度、叶子最少样本数 | 随机森林 |
 | `channels` | 网络的宽度 | 两个 CNN |
 | `epochs` | 最多训练几轮；程序会自动停在验证效果最好的那一轮 | 两个 CNN |

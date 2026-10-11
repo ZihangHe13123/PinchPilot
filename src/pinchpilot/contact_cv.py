@@ -41,7 +41,16 @@ _NETWORK = {
 }
 # Every option a candidate may set, with the value used when it does not.
 DEFAULTS = {
-    "rules": {"frames": 1, "stride": 1, "label_fraction": 1.0, "statistic": "last"},
+    "rules": {
+        "frames": 1,
+        "stride": 1,
+        "label_fraction": 1.0,
+        "statistic": "last",
+        "flat_middle": False,
+        "flat_index": False,
+        "flat_ring": False,
+        "nearest": False,
+    },
     "forest": {
         "frames": 8,
         "stride": 3,
@@ -90,6 +99,10 @@ CHECKS = {
         type(value) is str and value == "balanced" or _number(False, 0.05, 50.0)(value)
     ),
     "statistic": lambda value: type(value) is str and value in ("last", "median", "mean", "min"),
+    "flat_middle": lambda value: type(value) is bool,
+    "flat_index": lambda value: type(value) is bool,
+    "flat_ring": lambda value: type(value) is bool,
+    "nearest": lambda value: type(value) is bool,
     "shared": lambda value: type(value) is bool,
     "context": lambda value: type(value) is bool,
 }
@@ -162,11 +175,48 @@ def _best_threshold(values, labels):
     return float((values[best] + above) / 2)
 
 
-def _distances(x, options):
+THUMB_TIP = 4
+# MediaPipe fingertip behind each output, in the order of CHANNELS.
+FINGERTIPS = (12, 8, 16)
+
+
+def _ratios(x, options):
+    """Thumb tip to each fingertip in 3-D over the recent frames, as one number per finger."""
     recent = x[:, -options["frames"] :, 63:66]
     if options["statistic"] == "last":
         return recent[:, -1]
     return getattr(np, options["statistic"])(recent, axis=1)
+
+
+def _distances(x, options):
+    """What the rule compares with its cuts, [N, 3] in the order of CHANNELS.
+
+    By default the 3-D distance ratio of the features. For a finger set to flat, the distance
+    within the image plane instead: the same two points and the same palm unit, without the
+    estimated depth.
+    """
+    flat = [options.get(f"flat_{channel}", False) for channel in CHANNELS]
+    if not any(flat):
+        return _ratios(x, options)
+    recent = x[:, -options["frames"] :]
+    values = recent[:, :, 63:66].copy()
+    points = recent[:, :, :63].reshape(len(x), recent.shape[1], 21, 3)
+    for i, tip in enumerate(FINGERTIPS):
+        if flat[i]:
+            gap = points[:, :, THUMB_TIP, :2] - points[:, :, tip, :2]
+            values[:, :, i] = np.linalg.norm(gap, axis=-1)
+    if options["statistic"] == "last":
+        return values[:, -1]
+    return getattr(np, options["statistic"])(values, axis=1)
+
+
+def _nearer_only(touching, ratios):
+    """Where index and ring both come out as touching, keep the one nearer to the thumb."""
+    touching = touching.copy()
+    both = touching[:, 1] & touching[:, 2]
+    touching[both & (ratios[:, 1] > ratios[:, 2]), 1] = False
+    touching[both & (ratios[:, 1] <= ratios[:, 2]), 2] = False
+    return touching
 
 
 def _label_subset(pool, rows, fraction, seed):
@@ -209,10 +259,14 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None):
     if model == "rules":
         distances = _distances(x, options)
         thresholds = np.array([_best_threshold(distances[:, i], y[:, i]) for i in range(3)])
-        scores = {
-            name: (_distances(windows, options) <= thresholds).astype(np.float32)
-            for name, (windows, _) in targets.items()
-        }
+
+        def decide(windows):
+            touching = _distances(windows, options) <= thresholds
+            if options["nearest"]:
+                touching = _nearer_only(touching, _ratios(windows, options))
+            return touching.astype(np.float32)
+
+        scores = {name: decide(windows) for name, (windows, _) in targets.items()}
         return scores, {"thresholds": dict(zip(CHANNELS, thresholds.tolist()))}
     if model == "forest":
 
@@ -608,8 +662,17 @@ def markdown(report):
         shown = dict(candidate["options"])
         if not shown.get("pretrain_epochs"):
             shown.pop("mask", None)  # Only used by pretraining.
-        for key, off in (("inputs", "all"), ("rotate", 0), ("scale_jitter", 0), ("noise", 0)):
-            if shown.get(key) == off:
+        for key, off in (
+            ("inputs", "all"),
+            ("rotate", 0),
+            ("scale_jitter", 0),
+            ("noise", 0),
+            ("flat_middle", False),
+            ("flat_index", False),
+            ("flat_ring", False),
+            ("nearest", False),
+        ):
+            if key in shown and shown[key] == off:
                 del shown[key]  # Left out where it changes nothing.
         options = "，".join(f"{key}={value}" for key, value in shown.items())
         size = f"；{candidate['parameters']} 个参数" if candidate["parameters"] else ""

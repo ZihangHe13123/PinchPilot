@@ -2,10 +2,14 @@
   "schema": "pinchpilot-contact-settings-v1",
   "model": "rules",
   "seed": 42,
-  "note": "每个手指一个距离阈值，在训练的人身上选 F1 最高的。frames 和 statistic 决定用最近几帧的哪个统计量。",
+  "note": "每个手指一个距离阈值，在训练的人身上选 F1 最高的。frames 和 statistic 决定用最近几帧的哪个统计量。flat_middle、flat_index、flat_ring 为 true 时，这根手指改用画面内的距离（不含估计的深度）。nearest 为 true 时，食指和无名指同时判为接触的，只保留离拇指更近的那个。",
   "candidates": [
     {"name": "只看当前帧", "frames": 1, "statistic": "last"},
     {"name": "3 帧中位数", "frames": 3, "statistic": "median"},
-    {"name": "5 帧中位数", "frames": 5, "statistic": "median"}
+    {"name": "5 帧中位数", "frames": 5, "statistic": "median"},
+    {"name": "全部用画面内距离", "frames": 1, "statistic": "last", "flat_middle": true, "flat_index": true, "flat_ring": true},
+    {"name": "食指用画面内距离", "frames": 1, "statistic": "last", "flat_index": true},
+    {"name": "食指用画面内距离＋只取近的", "frames": 1, "statistic": "last", "flat_index": true, "nearest": true},
+    {"name": "只取近的", "frames": 1, "statistic": "last", "nearest": true}
   ]
 }

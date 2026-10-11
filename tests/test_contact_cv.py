@@ -13,6 +13,7 @@ from pinchpilot.contact_data import CHANNELS, FEATURE_COUNT
 from pinchpilot.contact_pool import ContactPool
 
 SETTINGS = Path(__file__).parents[1] / "experiments" / "contact"
+FLAGS = ("flat_middle", "flat_index", "flat_ring", "nearest")
 PEOPLE = ("P01", "P02", "P03")
 
 
@@ -124,6 +125,10 @@ def test_shipped_settings_files_are_valid_and_cover_the_two_finger_cnn_controls(
     assert {(True, True), (False, True), (True, False)} <= switches
     pretrained = [item["options"]["pretrain_epochs"] for item in models["cnn"]["candidates"]]
     assert 0 in pretrained and max(pretrained) > 0  # The same CNN with and without it.
+    # The rule is also compared with a depth-free distance and with one finger at a time.
+    rules = [item["options"] for item in models["rules"]["candidates"]]
+    assert any(item["flat_index"] and not item["flat_ring"] for item in rules)
+    assert any(item["nearest"] for item in rules) and not any(rules[0][key] for key in FLAGS)
     # The temporal CNN is also compared with its hands turned in training, and on distances only.
     options = [item["options"] for item in models["cnn"]["candidates"]]
     assert any(item["rotate"] for item in options) and not options[0]["rotate"]
@@ -559,6 +564,72 @@ def test_rules_and_forest_learn_the_separable_fixture_and_reports_are_plain_json
             write_report(report, settings, tmp_path / model)
 
 
+def test_rule_can_measure_in_the_image_plane_and_let_only_the_nearer_finger_touch():
+    filled = check_settings(spec("rules", {"name": "a"}))["candidates"][0]["options"]
+    assert not any(filled[key] for key in FLAGS)
+    for bad in ({"flat_index": 1}, {"nearest": "yes"}, {"flat_ring": None}):
+        with pytest.raises(ValueError, match="取值无效"):
+            check_settings(spec("rules", {"name": "a", **bad}))
+    for model in ("forest", "cnn", "finger_cnn"):
+        for option in ({"flat_index": True}, {"nearest": True}):
+            with pytest.raises(ValueError, match="不认识的项"):
+                check_settings(spec(model, {"name": "a", **option}))
+
+    def options(**changes):
+        return check_settings(spec("rules", {"name": "a", **changes}))["candidates"][0]["options"]
+
+    rng = np.random.default_rng(4)
+    x = rng.normal(0, 1, (60, 8, FEATURE_COUNT)).astype(np.float32)
+    points = x[:, :, :63].reshape(60, 8, 21, 3)
+
+    def flat(tip, frames):  # Thumb tip to a fingertip without the depth coordinate.
+        return np.linalg.norm(points[:, -frames:, 4, :2] - points[:, -frames:, tip, :2], axis=-1)
+
+    assert np.array_equal(contact_cv._distances(x, options()), x[:, -1, 63:66])
+    mixed = contact_cv._distances(x, options(flat_index=True, frames=3, statistic="median"))
+    assert np.allclose(mixed[:, 1], np.median(flat(8, 3), axis=1), atol=1e-6)
+    assert np.array_equal(mixed[:, [0, 2]], np.median(x[:, -3:, 63:66], axis=1)[:, [0, 2]])
+    every = contact_cv._distances(x, options(flat_middle=True, flat_index=True, flat_ring=True))
+    assert np.allclose(every, np.stack([flat(tip, 1)[:, 0] for tip in (12, 8, 16)], axis=1))
+
+    # Depth that misleads: the index ratio is noise, the distance in the image carries the label.
+    y = rng.permutation(np.tile(np.array([[0, 0, 0], [1, 1, 1], [0, 1, 0], [1, 0, 1]]), (15, 1)))
+    x[:, :, 63:66] = np.where(y[:, None, :] == 1, 0.1, 0.6)
+    x[:, :, 64] = rng.uniform(0.1, 0.6, (60, 8))
+    x[:, :, 12:14] = 0  # Thumb tip, x and y.
+    x[:, :, 24] = np.where(y[:, None, 1] == 1, 0.1, 0.6)  # Index fingertip, x.
+    x[:, :, 25] = 0
+    target = {"t": (x, y)}
+    by_ratio, details = contact_cv._fit_and_score("rules", options(), 0, x, y, target, False)
+    in_plane, _ = contact_cv._fit_and_score(
+        "rules", options(flat_index=True), 0, x, y, target, False
+    )
+    assert set(details["thresholds"]) == set(CHANNELS)
+    assert np.array_equal(in_plane["t"], y) and not np.array_equal(by_ratio["t"][:, 1], y[:, 1])
+    assert np.array_equal(by_ratio["t"][:, [0, 2]], y[:, [0, 2]])
+
+    # Index and ring both under their cuts: the thumb is on the nearer one. Ties go to the index.
+    x[:, :, 63:66] = np.where(y[:, None, :] == 1, 0.1, 0.6)
+    near = np.full((4, 8, FEATURE_COUNT), 0.6, dtype=np.float32)
+    near[:, :, 64] = np.array([0.10, 0.20, 0.15, 0.10])[:, None]
+    near[:, :, 65] = np.array([0.20, 0.10, 0.15, 0.60])[:, None]
+    unused = np.zeros((4, 3), dtype=np.int8)
+    plain, _ = contact_cv._fit_and_score("rules", options(), 0, x, y, {"n": (near, unused)}, False)
+    one, _ = contact_cv._fit_and_score(
+        "rules", options(nearest=True), 0, x, y, {"n": (near, unused)}, False
+    )
+    assert plain["n"][:, 1:].tolist() == [[1, 1], [1, 1], [1, 1], [1, 0]]
+    assert one["n"][:, 1:].tolist() == [[1, 0], [0, 1], [1, 0], [1, 0]]
+    assert one["n"][:, 0].tolist() == [0, 0, 0, 0]  # The middle finger is never part of this.
+
+    report = run_cv(
+        fake_pool(),
+        check_settings(spec("rules", {"name": "近的", "nearest": True}, {"name": "原样"})),
+    )
+    text = markdown(report)
+    assert text.count("nearest=True") == 1 and "flat_" not in text and "nearest=False" not in text
+
+
 def test_report_says_when_numbers_are_not_results():
     settings = check_settings(spec("rules"))
     draft = markdown(run_cv(fake_pool(labels="draft"), settings))
@@ -694,7 +765,8 @@ def test_commands_run_on_the_synthetic_pool(tmp_path, capsys):
     assert main([*command, "--output", str(output), "--allow-synthetic"]) == 0
     shown = capsys.readouterr()
     assert "# 调过阈值的规则：验证结果" in shown.out and "## 测试" not in shown.out
-    assert "[9/9]" in shown.err
+    fits = 3 * len(read_settings(SETTINGS / "rules.json")["candidates"])
+    assert f"[{fits}/{fits}]" in shown.err
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
     assert report["test"] is None and report["evidence"] == "synthetic_engineering"
     assert main([*command, "--output", str(output), "--allow-synthetic"]) == 2
