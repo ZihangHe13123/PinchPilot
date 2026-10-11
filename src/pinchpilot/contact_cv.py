@@ -74,7 +74,15 @@ DEFAULTS = {
         "scale_jitter": 0.0,
         "noise": 0.0,
     },
-    "finger_cnn": {**_NETWORK, "channels": 24, "shared": True, "context": True},
+    "finger_cnn": {
+        **_NETWORK,
+        "channels": 24,
+        "shared": True,
+        "context": True,
+        "rotate": 0,
+        "scale_jitter": 0.0,
+        "noise": 0.0,
+    },
 }
 
 
@@ -278,16 +286,16 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None, 
     mean = basis.astype(np.float64).mean(axis=axes)
     scale = basis.astype(np.float64).std(axis=axes)
     scale = np.where(scale < 1e-6, 1.0, scale)
-    augment = None
+    varied = {key: options[key] for key in ("rotate", "scale_jitter", "noise")}
+    fitted = _normalize(inputs, mean, scale)
     if model == "cnn":
-        augment = nets.augmenter(
-            mean,
-            scale,
-            rotate=options["rotate"],
-            scale_jitter=options["scale_jitter"],
-            noise=options["noise"],
-            seed=seed,
-        )
+        augment = nets.augmenter(mean, scale, **varied, seed=seed)
+    else:
+        augment = nets.finger_augmenter(mean, scale, **varied, seed=seed)
+        if augment is not None:
+            # The whole hand is varied before it is cut into finger views, so training
+            # starts from the raw windows; the augmenter cuts and normalizes each batch.
+            fitted = x[:, -frames:].astype(np.float32)
     rebuilt = None
     if pretraining:
         rebuilt = nets.pretrain(
@@ -311,7 +319,7 @@ def _fit_and_score(model, options, seed, x, y, targets, select, keypoints=None, 
     }
     details, states = nets.train(
         network,
-        _normalize(inputs, mean, scale),
+        fitted,
         y,
         epochs=options["epochs"],
         learning_rate=options["learning_rate"],

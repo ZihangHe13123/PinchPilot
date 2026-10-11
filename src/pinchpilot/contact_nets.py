@@ -43,32 +43,45 @@ def finger_inputs(x):
     return np.stack(views, axis=1).astype(np.float32)
 
 
+def finger_views(x):
+    """`finger_inputs` for a tensor: [N, T, 67] -> [N, 3, T, 29]."""
+    torch = _torch()
+    count, frames, _ = x.shape
+    points = x[:, :, :COORDINATES].reshape(count, frames, 21, 3)
+    thumb = points[:, :, THUMB, :].reshape(count, frames, 12)
+    views = []
+    for channel, joints in enumerate(FINGERS):
+        finger = points[:, :, joints, :]
+        views.append(
+            torch.cat(
+                (
+                    thumb,
+                    finger.reshape(count, frames, 12),
+                    finger[:, :, 3] - points[:, :, 4],
+                    x[:, :, 63 + channel : 64 + channel],
+                    x[:, :, 66:67],
+                ),
+                dim=2,
+            )
+        )
+    return torch.stack(views, dim=1)
+
+
 def temporal_cnn(frames, channels, seed, features=COORDINATES + DISTANCE_FEATURES):
     """The causal CNN of contact_models with a chosen width; input [N, T, features]."""
     return _make_cnn(frames, seed, channels, features)
 
 
-def augmenter(mean, scale, *, rotate=0.0, scale_jitter=0.0, noise=0.0, seed=0):
-    """A function that varies normalized [N, T, W] windows the way hands and people vary.
+def _variation(coordinates, rotate, scale_jitter, noise, seed):
+    """A function that varies raw [N, T, W] windows; W is `coordinates` + 4.
 
     Each window gets one random turn of the whole hand about its palm centre, up to `rotate`
     degrees about each of the three axes; one size factor within ±`scale_jitter`, applied to
     the coordinates and the distance ratios alike; and noise of standard deviation `noise`
     on every coordinate. A turn changes no distance, so the ratios stay as recorded, and the
-    frame interval is never changed. W is 67, or 4 for windows of ratios and interval only,
-    which have no coordinates to turn. `mean` and `scale` are the normalization of the
-    windows. Returns None when there is nothing to vary.
+    frame interval is never changed.
     """
-    if not (rotate or scale_jitter or noise):
-        return None
     torch = _torch()
-    coordinates = len(mean) - DISTANCE_FEATURES
-    if coordinates not in (0, COORDINATES):
-        raise ValueError("窗口的特征数不对，无法做数据增强")
-    if not coordinates and (rotate or noise):
-        raise ValueError("只用距离比时没有坐标可以旋转或加噪声")
-    centre = torch.as_tensor(np.asarray(mean), dtype=torch.float32)
-    spread = torch.as_tensor(np.asarray(scale), dtype=torch.float32)
     generator = torch.Generator().manual_seed(seed)
     limit = math.radians(rotate)
 
@@ -84,8 +97,7 @@ def augmenter(mean, scale, *, rotate=0.0, scale_jitter=0.0, noise=0.0, seed=0):
         about_y = matrix(c.cos(), zero, c.sin(), zero, one, zero, -c.sin(), zero, c.cos())
         return about_z @ about_x @ about_y
 
-    def vary(batch):
-        raw = batch * spread + centre
+    def vary(raw):
         count, frames, _ = raw.shape
         points, ratios, interval = raw[..., :coordinates], raw[..., coordinates:-1], raw[..., -1:]
         if coordinates:
@@ -101,9 +113,48 @@ def augmenter(mean, scale, *, rotate=0.0, scale_jitter=0.0, noise=0.0, seed=0):
             if coordinates:
                 points = points * factor[..., None]
         points = points.reshape(count, frames, coordinates)
-        return (torch.cat((points, ratios, interval), dim=2) - centre) / spread
+        return torch.cat((points, ratios, interval), dim=2)
 
     return vary
+
+
+def augmenter(mean, scale, *, rotate=0.0, scale_jitter=0.0, noise=0.0, seed=0):
+    """A function that varies normalized [N, T, W] windows the way hands and people vary.
+
+    What is varied is described at `_variation`. W is 67, or 4 for windows of ratios and
+    interval only, which have no coordinates to turn. `mean` and `scale` are the
+    normalization of the windows. Returns None when there is nothing to vary.
+    """
+    if not (rotate or scale_jitter or noise):
+        return None
+    torch = _torch()
+    coordinates = len(mean) - DISTANCE_FEATURES
+    if coordinates not in (0, COORDINATES):
+        raise ValueError("窗口的特征数不对，无法做数据增强")
+    if not coordinates and (rotate or noise):
+        raise ValueError("只用距离比时没有坐标可以旋转或加噪声")
+    centre = torch.as_tensor(np.asarray(mean), dtype=torch.float32)
+    spread = torch.as_tensor(np.asarray(scale), dtype=torch.float32)
+    vary = _variation(coordinates, rotate, scale_jitter, noise, seed)
+    return lambda batch: (vary(batch * spread + centre) - centre) / spread
+
+
+def finger_augmenter(mean, scale, *, rotate=0.0, scale_jitter=0.0, noise=0.0, seed=0):
+    """A function from raw [N, T, 67] windows to varied, normalized finger views [N, 3, T, 29].
+
+    The whole hand is varied first, as for the temporal CNN, and only then cut into the three
+    finger views, so that thumb and fingers turn together. `mean` and `scale` are the
+    normalization of the finger views. Returns None when there is nothing to vary.
+    """
+    if not (rotate or scale_jitter or noise):
+        return None
+    torch = _torch()
+    if len(mean) != FINGER_FEATURES:
+        raise ValueError("手指视图的特征数不对，无法做数据增强")
+    centre = torch.as_tensor(np.asarray(mean), dtype=torch.float32)
+    spread = torch.as_tensor(np.asarray(scale), dtype=torch.float32)
+    vary = _variation(COORDINATES, rotate, scale_jitter, noise, seed)
+    return lambda batch: (finger_views(vary(batch)) - centre) / spread
 
 
 def finger_cnn(frames, channels, seed, shared=True, context=True):

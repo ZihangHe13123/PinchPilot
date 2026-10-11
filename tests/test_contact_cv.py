@@ -326,7 +326,7 @@ def test_pretraining_learns_to_rebuild_blanked_keypoints_without_touching_the_he
     assert hidden["history"][-1]["masked_error"] * FEATURE_COUNT > 0.9
 
 
-def test_variation_and_input_options_belong_to_the_temporal_cnn_and_are_checked():
+def test_variation_options_belong_to_the_two_cnns_and_input_choice_to_the_temporal_one():
     filled = check_settings(spec("cnn", {"name": "a"}))["candidates"][0]["options"]
     assert (filled["inputs"], filled["rotate"], filled["scale_jitter"], filled["noise"]) == (
         "all",
@@ -352,10 +352,23 @@ def test_variation_and_input_options_belong_to_the_temporal_cnn_and_are_checked(
     for clash in ({"rotate": 30}, {"noise": 0.01}, {"pretrain_epochs": 2}):
         with pytest.raises(ValueError, match=f"inputs 是 distances.*{next(iter(clash))}"):
             check_settings(spec("cnn", {"name": "a", "inputs": "distances", **clash}))
-    for model in ("finger_cnn", "forest", "rules"):
-        for option in ({"rotate": 30}, {"inputs": "distances"}):
-            with pytest.raises(ValueError, match="不认识的项"):
-                check_settings(spec(model, {"name": "a", **option}))
+    # The finger-shared CNN can be trained on varied hands too; it always sees coordinates.
+    varied = {"rotate": 180, "scale_jitter": 0.15, "noise": 0.03}
+    fingers = check_settings(spec("finger_cnn", {"name": "a", **varied}))
+    assert {key: fingers["candidates"][0]["options"][key] for key in varied} == varied
+    plain = check_settings(spec("finger_cnn", {"name": "a"}))["candidates"][0]["options"]
+    assert (plain["rotate"], plain["scale_jitter"], plain["noise"]) == (0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="取值无效"):
+        check_settings(spec("finger_cnn", {"name": "a", "rotate": 181}))
+    for model, option in (
+        ("finger_cnn", {"inputs": "distances"}),
+        ("forest", {"rotate": 30}),
+        ("forest", {"inputs": "distances"}),
+        ("rules", {"rotate": 30}),
+        ("rules", {"inputs": "distances"}),
+    ):
+        with pytest.raises(ValueError, match="不认识的项"):
+            check_settings(spec(model, {"name": "a", **option}))
 
 
 def test_augmenter_turns_whole_hands_and_keeps_what_a_turn_cannot_change():
@@ -457,6 +470,80 @@ def test_only_training_batches_are_varied():
     # What must be rebuilt is the varied window, here all zeros, which is easy.
     usual = nets.pretrain(nets.temporal_cnn(8, 8, seed=1), x, **settings)
     assert rebuilt["history"][-1]["masked_error"] < 0.2 * usual["history"][-1]["masked_error"]
+
+
+def test_finger_views_are_cut_from_a_hand_that_was_varied_as_a_whole():
+    torch = pytest.importorskip("torch")
+    from pinchpilot import contact_nets as nets
+
+    rng = np.random.default_rng(6)
+    raw = rng.normal(0, 1, (30, 8, FEATURE_COUNT)).astype(np.float32)
+    raw[:, :, 63:66] = np.abs(raw[:, :, 63:66]) + 0.1
+    views = nets.finger_inputs(raw)
+    assert torch.equal(nets.finger_views(torch.from_numpy(raw)), torch.from_numpy(views))
+    mean, scale = views.mean(axis=(0, 1, 2)), views.std(axis=(0, 1, 2))
+    assert nets.finger_augmenter(mean, scale) is None  # Nothing to vary.
+    with pytest.raises(ValueError, match="手指视图的特征数不对"):
+        nets.finger_augmenter(mean[:5], scale[:5], rotate=30)
+
+    def varied(**options):
+        out = nets.finger_augmenter(mean, scale, **options)(torch.from_numpy(raw))
+        return out.numpy() * scale + mean  # Back to the units of the views.
+
+    # With next to no variation the result is the ordinary normalized view of the same hand.
+    assert np.allclose(varied(scale_jitter=1e-9, seed=1), views, atol=1e-4)
+
+    turned = varied(rotate=180, seed=1)
+    assert turned.shape == views.shape == (30, 3, 8, 29)
+    assert not np.allclose(turned[..., :24], views[..., :24], atol=0.2)
+    assert np.allclose(turned[..., 27:], views[..., 27:], atol=1e-4)  # Ratio and interval.
+    # One turn for the whole hand: the thumb is the same in all three views of a window, and
+    # within a view every inner product among thumb joints, finger joints and their gap stays.
+    assert np.allclose(turned[:, 0, :, :12], turned[:, 1, :, :12], atol=1e-5)
+    assert np.allclose(turned[:, 0, :, :12], turned[:, 2, :, :12], atol=1e-5)
+
+    def gram(values):
+        points = values[..., :27].reshape(30, 3, 8 * 9, 3).astype(np.float64)
+        return points @ points.transpose(0, 1, 3, 2)
+
+    assert np.allclose(gram(turned), gram(views), atol=3e-3)
+    # The gap feature is still fingertip minus thumb tip of the turned hand.
+    assert np.allclose(turned[..., 24:27], turned[..., 21:24] - turned[..., 9:12], atol=1e-4)
+
+    sized = varied(scale_jitter=0.2, seed=1)
+    factor = sized[..., 27] / views[..., 27]
+    assert np.allclose(factor, factor[:, :1, :1], atol=2e-3) and factor.std() > 0.05
+    assert np.allclose(sized[..., :27], views[..., :27] * factor[:, :1, :1, None], atol=3e-3)
+    assert np.array_equal(
+        varied(rotate=90, noise=0.02, seed=4), varied(rotate=90, noise=0.02, seed=4)
+    )
+
+
+def test_finger_cnn_with_varied_hands_runs_the_whole_protocol():
+    pytest.importorskip("torch")
+    base = {"channels": 8, "epochs": 10, "learning_rate": 0.01, "batch_size": 16, "stride": 1}
+    settings = check_settings(
+        spec(
+            "finger_cnn",
+            {"name": "原样", **base},
+            {"name": "旋转", **base, "rotate": 180},
+            {"name": "都用", **base, "rotate": 90, "scale_jitter": 0.1, "noise": 0.01},
+        )
+    )
+    report = run_cv(fake_pool(), settings, final_test=True)
+    plain, turned, everything = report["candidates"]
+    assert plain["parameters"] == turned["parameters"] == everything["parameters"]
+    # Same seed and data: turning the hands in training is the only difference between these.
+    assert turned["validation"] != plain["validation"]
+    assert turned["validation"]["macro_f1"] > 0.8 and everything["validation"]["macro_f1"] > 0.6
+    assert all(np.isfinite(fold["macro_f1"]) for fold in report["test"]["folds"])
+    again = run_cv(fake_pool(), settings)
+    assert [item["validation"] for item in again["candidates"]] == [
+        item["validation"] for item in report["candidates"]
+    ]
+    text = markdown(report)
+    assert text.count("rotate=180") == 1 and text.count("rotate=") == 2
+    assert text.count("scale_jitter=0.1") == 1 and text.count("noise=0.01") == 1
 
 
 def test_cnn_on_distances_only_and_with_varied_hands_runs_the_whole_protocol():
