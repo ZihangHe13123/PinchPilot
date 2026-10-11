@@ -640,3 +640,72 @@ def test_overlay_survives_main_window_minimization_and_close_disposes_it(window,
     assert window.framing_overlay.isVisible()
     window.close()
     assert window.framing_overlay.disposed
+
+
+def test_contact_source_offers_fitted_models_applies_one_and_remembers_it(application, tmp_path):
+    import shutil
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_contact_live import rule_folder
+
+    root = tmp_path / "data" / "contact_models"
+    mine = rule_folder(
+        root / "rule_without_me", candidate="近的", trained_on=["P02", "P03"], excluded="P01"
+    )
+    rule_folder(root / "rule_all", trained_on=["P01", "P02", "P03"])
+    (root / "broken").mkdir()
+    (root / "broken" / "model.json").write_text("{}", encoding="utf-8")
+
+    win = desktop.DesktopWindow(tmp_path)
+    win.timer.stop()
+    choice = win.contact_source
+    assert [choice.itemText(i) for i in range(choice.count())] == [
+        "现有规则 · 固定的距离阈值",
+        "调过的规则 · 用 P01、P02、P03 训练",
+        "调过的规则 · 训练时不含 P01 · 近的",
+    ]
+    assert "broken" in choice.toolTip()
+    # Nothing is chosen for the user: the thresholds decide until they pick a model.
+    assert choice.currentData() == "" and win.controller.engine.contacts is None
+    assert not win.controller.active
+
+    choice.setCurrentIndex(choice.findData(mine))
+    engine = win.controller.engine
+    assert engine.config.contact_model == mine and engine.contacts.model.kind == "rules"
+    assert not win.controller.active  # Changing the source never starts control.
+    saved = json.loads(win.settings_path.read_text(encoding="utf-8"))
+    assert saved["contact_model"] == mine
+    # A task record carries which model judged the touches.
+    win.open_practice()
+    summary = win.practice_window.engine_config["contact_model_summary"]
+    assert summary["excluded"] == "P01" and summary["trained_on"] == ["P02", "P03"]
+    assert win.practice_window.engine_config["contact_model"] == mine
+    win.close()
+
+    second = desktop.DesktopWindow(tmp_path)
+    second.timer.stop()
+    assert second.contact_source.currentData() == mine
+    assert second.controller.engine.contacts is not None and not second.controller.active
+    # A model that stops loading after it was listed: back to the thresholds, and said so.
+    (Path(mine) / "model.json").write_text("{}", encoding="utf-8")
+    second.contact_source.setCurrentIndex(0)
+    second.contact_source.blockSignals(True)
+    second.contact_source.addItem("坏掉的", mine)
+    second.contact_source.blockSignals(False)
+    second.contact_source.setCurrentIndex(second.contact_source.findData(mine))
+    assert second.controller.engine.contacts is None
+    assert second.contact_source.currentData() == ""
+    assert "接触模型无法加载，已改回现有规则" in second.controller.notice
+    second.close()
+
+    # The remembered model is gone at the next start.
+    settings = json.loads(second.settings_path.read_text(encoding="utf-8"))
+    settings["contact_model"] = mine
+    second.settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    shutil.rmtree(mine)
+    third = desktop.DesktopWindow(tmp_path)
+    third.timer.stop()
+    assert third.contact_source.currentData() == "" and third.controller.engine.contacts is None
+    assert "接触模型找不到了" in third.controller.notice
+    third.close()

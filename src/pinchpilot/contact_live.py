@@ -168,6 +168,57 @@ def load_live_model(directory):
     return LiveModel(record, arrays)
 
 
+KINDS = {"rules": "调过的规则", "cnn": "时序 CNN"}
+SUMMARY = (
+    "model",
+    "candidate",
+    "trained_on",
+    "excluded",
+    "training_windows",
+    "pool_fingerprint",
+    "source",
+    "labels",
+    "evidence",
+    "app_version",
+    "weights_sha256",
+)
+
+
+def describe(model):
+    """What a record of use should say about a loaded model: which one, fitted on whom."""
+    return {key: model.record[key] for key in SUMMARY if key in model.record}
+
+
+def label(model):
+    """One line for a person choosing between models."""
+    record = model.record
+    people = record.get("trained_on") or []
+    if record.get("excluded"):
+        who = f"训练时不含 {record['excluded']}"
+    elif people:
+        who = f"用 {'、'.join(people)} 训练"
+    else:
+        who = "训练者未记录"
+    name = f" · {record['candidate']}" if record.get("candidate") else ""
+    return f"{KINDS[model.kind]} · {who}{name}"
+
+
+def find_models(root):
+    """Every loadable model one level below `root`: ([(label, folder, model)], [problems])."""
+    root = Path(root)
+    found, problems = [], []
+    if not root.is_dir():
+        return found, problems
+    for folder in sorted(path for path in root.iterdir() if (path / "model.json").is_file()):
+        try:
+            model = load_live_model(folder)
+        except ValueError as error:
+            problems.append(f"{folder.name}：{error}")
+            continue
+        found.append((label(model), str(folder), model))
+    return sorted(found, key=lambda item: item[0]), problems
+
+
 class LiveContacts:
     """Feeds camera frames to a live model: one decision per frame once a window is full.
 

@@ -336,6 +336,10 @@ class DesktopController:
         self.engine = TripodEngine(config)
         self.result = self.engine.last_result
         self.metrics.record("configuration", config=asdict(config))
+        if self.engine.contacts is not None:
+            from .contact_live import describe
+
+            self.metrics.record("contact_model", **describe(self.engine.contacts.model))
 
     def consume(self, packet):
         now = self.clock()
