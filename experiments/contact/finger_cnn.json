@@ -2,10 +2,12 @@
   "schema": "pinchpilot-contact-settings-v1",
   "model": "finger_cnn",
   "seed": 42,
-  "note": "shared 三根手指是否共用参数，context 是否加上其他手指的信息；其余各项和时序 CNN 相同。",
+  "note": "手指共享 CNN 的定稿设置。调优后这一组是第四、五轮里最好的：三根手指共用参数、每根手指还看另外两根的向量，训练时相邻窗口全用（stride=1）、宽度 40、L2 衰减 1e-4。另外三组是对照实验：分别关掉共用参数、关掉其他手指信息、两个都关，用来验证共用参数和跨手指信息各值多少。基础组是原来文件里的设置，留作参考。",
   "candidates": [
-    {"name": "基础", "channels": 24, "epochs": 15, "learning_rate": 0.001, "shared": true, "context": true},
-    {"name": "对照：不共用参数", "channels": 24, "epochs": 15, "learning_rate": 0.001, "shared": false, "context": true},
-    {"name": "对照：不加其他手指", "channels": 24, "epochs": 15, "learning_rate": 0.001, "shared": true, "context": false}
+    {"name": "调优后", "channels": 40, "epochs": 15, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": true, "context": true},
+    {"name": "对照：不共用参数", "channels": 40, "epochs": 15, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": false, "context": true},
+    {"name": "对照：不加其他手指", "channels": 40, "epochs": 15, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": true, "context": false},
+    {"name": "对照：两个都关", "channels": 40, "epochs": 15, "learning_rate": 0.001, "stride": 1, "weight_decay": 0.0001, "shared": false, "context": false},
+    {"name": "基础（原设置）", "channels": 24, "epochs": 15, "learning_rate": 0.001, "shared": true, "context": true}
   ]
 }
