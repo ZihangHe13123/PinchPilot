@@ -12,6 +12,7 @@ from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QWidget
 
 from pinchpilot.domain import EngineResult, InputEvent
+from pinchpilot.practice import TASKS
 from pinchpilot.practice_window import PracticeWindow
 
 
@@ -41,7 +42,7 @@ def start(window, source="camera"):
 
 def test_waits_for_input_and_start_locks_task_choice(window):
     assert not window.start_button.isEnabled() and window.session is None
-    assert window.task_choice.count() == 5
+    assert window.task_choice.count() == len(TASKS) == 6
     start(window)
     assert window.session.active and not window.task_choice.isEnabled()
     assert window.cancel_button.isEnabled()

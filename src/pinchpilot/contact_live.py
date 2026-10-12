@@ -62,6 +62,12 @@ class LiveModel:
         if type(frames) is not int or not 1 <= frames <= self.config.frames:
             raise ValueError("模型用的帧数超出了窗口长度")
         self.record, self.options, self.kind = record, options, record.get("model")
+        alias = record.get("alias")
+        if alias is not None and (not isinstance(alias, str) or not alias.strip()):
+            raise ValueError("模型的显示名 alias 应为一段文字")
+        if self.kind == "thresholds":
+            # The app's own distance thresholds, listed like a model: nothing to load.
+            return
         if self.kind == "rules":
             self._rule(record)
         elif self.kind == "cnn":
@@ -185,6 +191,8 @@ class LiveModel:
         windows = np.asarray(windows, dtype=np.float32)
         if windows.ndim != 3 or windows.shape[1:] != (self.config.frames, FEATURE_COUNT):
             raise ValueError("窗口形状应为 [N, 帧数, 67]")
+        if self.kind == "thresholds":
+            raise ValueError("固定阈值由程序自己判断，这里没有分数")
         if self.kind == "rules":
             touching = contact_rules.decide(windows, self.options, self.thresholds)
             return touching.astype(np.float32)
@@ -243,8 +251,14 @@ def load_live_model(directory):
     return LiveModel(record, arrays)
 
 
-KINDS = {"rules": "调过的规则", "cnn": "时序 CNN", "finger_cnn": "手指共享 CNN"}
+KINDS = {
+    "thresholds": "现有规则",
+    "rules": "调过的规则",
+    "cnn": "时序 CNN",
+    "finger_cnn": "手指共享 CNN",
+}
 SUMMARY = (
+    "alias",
     "model",
     "candidate",
     "trained_on",
@@ -265,8 +279,16 @@ def describe(model):
 
 
 def label(model):
-    """One line for a person choosing between models."""
+    """One line for a person choosing between models.
+
+    A record with an `alias` shows only that, so that a comparison can be run without the
+    person knowing which model is which.
+    """
     record = model.record
+    if record.get("alias"):
+        return record["alias"].strip()
+    if model.kind == "thresholds":
+        return KINDS["thresholds"]
     people = record.get("trained_on") or []
     if record.get("excluded"):
         who = f"训练时不含 {record['excluded']}"
@@ -314,6 +336,8 @@ class LiveContacts:
         self.builder.reset()
 
     def push(self, frame):
+        if self.model.kind == "thresholds":
+            return None  # No decision: the engine's own thresholds stand, as without a model.
         window = self.builder.push(frame)
         if window is None:
             return None

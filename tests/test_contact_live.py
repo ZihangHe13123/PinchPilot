@@ -466,3 +466,47 @@ def test_models_in_a_folder_are_listed_with_a_line_that_says_who_they_were_fitte
         "trained_on": ["P02", "P03"],
         "excluded": "P01",
     }
+
+
+def test_a_model_folder_can_hide_what_it_is_and_can_stand_for_the_builtin_thresholds(tmp_path):
+    root = tmp_path / "contact_models"
+    named = rule_folder(root / "x", alias="设置 B", trained_on=["P02", "P03"], excluded="P01")
+    record = {
+        "schema": contact_live.SCHEMA,
+        "model": "thresholds",
+        "alias": "设置 A",
+        "options": {"frames": 1},
+        "feature_version": "contact-v1",
+        "window_config": {"frames": 8, "max_gap_seconds": 0.12, "max_window_seconds": 0.8},
+        "channels": ["middle", "index", "ring"],
+        "threshold": 0.5,
+    }
+    plain = str(save_live_model(record, None, root / "y"))
+    unnamed = str(save_live_model({**record, "alias": None}, None, root / "z"))
+    found, problems = contact_live.find_models(root)
+    # With an alias nothing but the alias is shown: not the kind, not who it was fitted on.
+    assert [text for text, _, _ in found] == ["现有规则", "设置 A", "设置 B"] and not problems
+    assert contact_live.describe(load_live_model(named))["alias"] == "设置 B"
+    assert (
+        contact_live.describe(load_live_model(named))["excluded"] == "P01"
+    )  # Kept for the record.
+    for bad in ("", "  ", 3):
+        with pytest.raises(ValueError, match="alias"):
+            LiveModel({**record, "alias": bad})
+
+    # The thresholds entry decides nothing itself: the engine behaves exactly as with no model.
+    model = load_live_model(plain)
+    assert model.kind == "thresholds" and load_live_model(unnamed).kind == "thresholds"
+    with pytest.raises(ValueError, match="没有分数"):
+        model.scores(windows(2))
+    live = LiveContacts(model)
+    assert [live.push(synthetic_tripod(i / 30)) for i in range(12)] == [None] * 12
+    without, standing_in = Sequence(), Sequence(TripodConfig(contact_model=plain))
+    for s in (without, standing_in):
+        s.frames(10)
+        s.frames(6, contact=0.12)
+        s.frames(8)
+        s.frames(6, contact=0.45)
+    assert kinds(standing_in) == kinds(without) == ["down", "up"]
+    assert standing_in.result.state == without.result.state
+    assert standing_in.result.prediction.source == "tripod-rules"

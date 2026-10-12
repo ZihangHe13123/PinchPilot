@@ -88,6 +88,55 @@ def test_press_outside_release_inside_and_wrong_button_do_not_hit():
     assert rig.session.hits == 0 and rig.session.misses == 2
 
 
+def test_right_click_task_counts_right_clicks_in_the_target_and_nothing_else():
+    rig = Rig("right_click")
+    session = rig.session
+    assert session.total == 5 and TASKS["right_click"].radius_px == TASKS["click"].radius_px
+
+    def right(point):
+        rig.feed(InputEvent("right_down", *point))
+        rig.feed(InputEvent("right_up", *point))
+
+    rig.click()  # A left click on the target is the wrong button here.
+    right((0, 0))  # A right click away from the target.
+    rig.feed(InputEvent("right_down", 0, 0))  # Pressed outside, released inside.
+    rig.feed(InputEvent("right_up", *session.target))
+    assert (session.hits, session.attempts, session.misses) == (0, 3, 3)
+    for done in range(1, 6):
+        right(session.target)
+        assert session.hits == done
+    assert session.completed and session.misses == 3
+    summary = session.summary(rig.now)
+    assert summary["task"] == "right_click" and summary["completed_targets"] == 5
+    assert summary["paired_button_attempts"] == 8
+    json.dumps(summary, allow_nan=False)
+
+
+def test_a_task_still_running_after_two_minutes_ends_as_not_completed():
+    rig = Rig("right_click")
+    session = rig.session
+    rig.feed(InputEvent("right_down", *session.target))
+    rig.feed(InputEvent("right_up", *session.target))
+    assert session.hits == 1 and PracticeSession.TIME_LIMIT == 120.0
+    while rig.now - session.started < 119.9:
+        rig.feed(dt=0.2)
+    assert session.active
+    rig.feed(dt=0.2)
+    assert not session.active and not session.completed and session.reason == "time_limit"
+    summary = session.summary(rig.now + 50)
+    assert summary["status"] == "cancelled" and summary["completed_targets"] == 1
+    assert summary["duration_s"] == pytest.approx(120, abs=0.3)  # Not counted past the end.
+    assert summary["protocol"]["time_limit_s"] == 120.0
+    rig.feed(InputEvent("right_down", *session.target))  # Nothing counts afterwards.
+    rig.feed(InputEvent("right_up", *session.target))
+    assert session.hits == 1
+
+    quick = Rig("click")
+    for _ in range(5):
+        quick.click()
+    assert quick.session.completed and quick.session.reason == "completed"
+
+
 def test_double_click_fixed_protocol_and_timeout():
     rig = Rig("double_click")
     rig.click()

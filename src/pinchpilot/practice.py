@@ -38,6 +38,11 @@ TASKS = {
         ((0.32, 0.5), (0.68, 0.5), (0.64, 0.5), (0.32, 0.5), (0.36, 0.5)),
         12.0,
     ),
+    "right_click": Task(
+        "右键点击",
+        "移动到圆心，食指移开，拇指和无名指轻捏并松开；按下与松开都在圆内才命中，左键不算。",
+        ((0.3, 0.4), (0.72, 0.6), (0.4, 0.68), (0.68, 0.32), (0.5, 0.5)),
+    ),
     "scroll": Task(
         "滚动后停住",
         "保持 V 手势，将滚动条移进绿色区，再停住手至少 0.70 秒；保持 V 等本轮通过。",
@@ -54,6 +59,9 @@ class PracticeSession:
     """
 
     MAX_GAP = 0.30
+    # A task that is still running after this long ends as not completed, so that runs under
+    # different settings stay comparable and nobody is stuck on a gesture that will not work.
+    TIME_LIMIT = 120.0
     SCROLL_SCALE = 4.0
     SCROLL_TOLERANCE = 4.0
     SCROLL_HOLD = 0.70
@@ -160,7 +168,7 @@ class PracticeSession:
             else self.inside(self.press_point, origin)
         )
         hit = (
-            button == "left"
+            button == ("right" if self.task == "right_click" else "left")
             and self.task != "scroll"
             and origin_inside
             and self.inside(point)
@@ -196,6 +204,9 @@ class PracticeSession:
             or (self.last_time is not None and now <= self.last_time)
         ):
             self.invalid_inputs += 1
+            return
+        if now - self.started >= self.TIME_LIMIT:
+            self.cancel(now, "time_limit")
             return
         points = ([result.pointer] if result.pointer is not None else []) + [
             (event.x, event.y)
@@ -312,6 +323,7 @@ class PracticeSession:
                 "scroll_tolerance": self.SCROLL_TOLERANCE,
                 "scroll_still_s": self.SCROLL_HOLD,
                 "maximum_input_gap_s": self.MAX_GAP,
+                "time_limit_s": self.TIME_LIMIT,
             },
             "definitions": {
                 "completed_targets": "Trials meeting this task's complete criterion; a double-click pair is one target.",
