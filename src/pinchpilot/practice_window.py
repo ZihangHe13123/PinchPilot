@@ -283,6 +283,7 @@ class PracticeWindow(QWidget):
             explanation = {
                 "stale_input": "输入已过期，请恢复相机后重新开始",
                 "source_changed": "输入来源已变化，请重新开始",
+                "time_limit": "到 2 分钟上限，这一项按未完成记录",
             }.get(self.session.reason, "")
             self.metrics.setText(
                 f"{status} · 完成 {self.session.hits}/{self.session.total} · 未命中 {self.session.misses}"
