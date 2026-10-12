@@ -808,6 +808,7 @@ class ContactCaptureWindow(QWidget):
         self.result_label.setStyleSheet("")
         turned_wrong = (
             self.last_angle is not None
+            and self.last_angle[0] is not None
             and self._pose_ok(SimpleNamespace(pose=self.last_angle[1]), self.last_angle[0]) is False
         )
         if not fresh:
