@@ -689,6 +689,26 @@ def test_a_round_that_asks_for_a_turned_hand_checks_it_and_records_what_was_done
     assert [round(step["palm_angle"]) for step in steps] == [22, 70, 70]
 
 
+def test_a_clip_with_no_measured_angle_is_not_called_turned_wrong(guided):
+    guided.protocol = [
+        Step("pose", "这一轮的手部朝向：手侧过来", 8.0, (None, None, None), round=1, pose=(55, 90)),
+        Step("open", "手张开", 5.0, (0, 0, 0), round=1),
+        Step("grip_move", "捏住", 5.0, (1, 0, 0), round=1),
+    ]
+    start(guided)
+    turned(guided, 70, guided.START_LOCK + 0.2)
+    tap(guided)
+    assert guided.clip_running
+    run(guided, 5.1)  # These frames carry no world landmarks: no angle for the whole clip.
+    assert not guided.clip_running and guided.last_angle == (None, (55, 90))
+    # The hand is measured again afterwards, turned the wrong way. That says nothing about the
+    # clip just recorded, and the prompt must not try to quote an angle it does not have.
+    turned(guided, 22, 0.2)
+    assert guided.palm_now == pytest.approx(22, abs=0.5)
+    text = guided.result_label.text()
+    assert "夹角约" not in text and "不符合" not in text and "上一段录完了" in text
+
+
 def test_rounds_without_a_pose_and_hands_without_an_angle_are_never_held_back(guided):
     start(guided)  # SHORT asks for no pose, and these frames carry no world landmarks.
     assert guided.clips[0].pose is None and guided.palm_now is None
