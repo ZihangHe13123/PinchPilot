@@ -898,7 +898,8 @@ def test_commands_run_on_the_synthetic_pool(tmp_path, capsys):
     assert main([*command, "--output", str(output), "--allow-synthetic"]) == 0
     shown = capsys.readouterr()
     assert "# 调过阈值的规则：验证结果" in shown.out and "## 测试" not in shown.out
-    fits = 3 * len(read_settings(SETTINGS / "rules.json")["candidates"])
+    shipped = read_settings(SETTINGS / "rules.json")
+    fits = 3 * len(shipped["candidates"]) * len(shipped["seeds"])
     assert f"[{fits}/{fits}]" in shown.err
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
     assert report["test"] is None and report["evidence"] == "synthetic_engineering"

@@ -4,7 +4,7 @@
 
 ## 开始前
 
-- 更新并启动：在项目文件夹里执行 `git pull`，再双击 `launch_desktop_windows.cmd`（Mac 用 `launch_desktop_mac.command`）。窗口标题应显示 **0.16.0**。
+- 更新并启动：在项目文件夹里执行 `git pull`，再双击 `launch_desktop_windows.cmd`（Mac 用 `launch_desktop_mac.command`）。窗口标题应显示 **0.17.0**。
 - 摆位：前臂有支撑，摄像头能看清整只手和指尖，光线不要背光。
 - 做动作的手用你平时操作 PinchPilot 的那只，另一只手放在空格键上。
 
