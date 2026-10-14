@@ -1,4 +1,4 @@
-# PinchPilot 0.11.0 Windows 测试反馈
+# PinchPilot Windows 测试反馈
 
 测试人（昵称即可）：
 测试日期与问题发生时间：
