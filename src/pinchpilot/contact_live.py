@@ -16,6 +16,11 @@ from . import contact_rules
 from .contact_data import CHANNELS, FEATURE_COUNT, FEATURE_VERSION, WindowBuilder, WindowConfig
 
 SCHEMA = "pinchpilot-live-contacts-v1"
+# Models shipped inside the package, fitted on all three participants' recordings.
+PRESETS = Path(__file__).parent / "contact_presets"
+BUILTIN = "builtin:"
+# What a new user starts with: the temporal CNN, which the internal pilot preferred.
+DEFAULT_CHOICE = "builtin:cnn"
 COORDINATES = 63
 WEIGHTS = ("conv1.weight", "conv1.bias", "conv2.weight", "conv2.bias", "head.weight", "head.bias")
 FLAGS = ("flat_middle", "flat_index", "flat_ring", "nearest")
@@ -314,6 +319,27 @@ def find_models(root):
             continue
         found.append((label(model), str(folder), model))
     return sorted(found, key=lambda item: item[0]), problems
+
+
+def builtin_models():
+    """The shipped models as [(label, choice, model)], the network first."""
+    found = []
+    for name in ("cnn", "rules"):
+        folder = PRESETS / name
+        if (folder / "model.json").is_file():
+            model = load_live_model(folder)
+            found.append((label(model), BUILTIN + name, model))
+    return found
+
+
+def resolve(choice):
+    """The folder a dropdown choice stands for: a shipped model, a user's folder, or ''."""
+    if choice and choice.startswith(BUILTIN):
+        name = choice[len(BUILTIN) :]
+        if name not in ("cnn", "rules") or not (PRESETS / name / "model.json").is_file():
+            raise ValueError(f"没有这个内置模型：{name}")
+        return str(PRESETS / name)
+    return choice or ""
 
 
 class LiveContacts:

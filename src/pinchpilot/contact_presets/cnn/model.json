@@ -1,0 +1,51 @@
+{
+  "schema": "pinchpilot-live-contacts-v1",
+  "app_version": "0.18.0",
+  "model": "cnn",
+  "candidate": "旋转＋缩放＋噪声",
+  "options": {
+    "frames": 8,
+    "stride": 2,
+    "label_fraction": 1.0,
+    "channels": 32,
+    "epochs": 22,
+    "learning_rate": 0.001,
+    "batch_size": 256,
+    "weight_decay": 0.0,
+    "positive_weight": 1.0,
+    "pretrain_epochs": 0,
+    "mask": 0.3,
+    "inputs": "all",
+    "rotate": 180,
+    "scale_jitter": 0.15,
+    "noise": 0.03
+  },
+  "seed": 42,
+  "trained_on": [
+    "P01",
+    "P02",
+    "P03"
+  ],
+  "excluded": null,
+  "training_windows": 102571,
+  "pool_fingerprint": "045cd107c1e0bdb1f6f89c3d11d9283d813f4391b4f9f847b889844b296397a6",
+  "source": "camera",
+  "labels": "reviewed",
+  "feature_version": "contact-v1",
+  "window_config": {
+    "frames": 8,
+    "max_gap_seconds": 0.12,
+    "max_window_seconds": 0.8
+  },
+  "channels": [
+    "middle",
+    "index",
+    "ring"
+  ],
+  "threshold": 0.5,
+  "evidence": "fitted_not_scored",
+  "parameters": 12739,
+  "alias": "时序 CNN · 内置",
+  "note": "Shipped with the app: fitted on all three participants' reviewed recordings. Its expected quality on a new person is the leave-one-person-out test score in docs/VALIDATION.md.",
+  "weights_sha256": "42219b9f95766b0a1d4c26908f5537d823f1cfa905ae9639b7484198621e4741"
+}
