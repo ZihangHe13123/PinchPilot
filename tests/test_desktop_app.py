@@ -672,7 +672,9 @@ def test_contact_source_offers_fitted_models_applies_one_and_remembers_it(applic
     assert (
         choice.currentData() == "builtin:cnn" and win.controller.engine.contacts.model.kind == "cnn"
     )
-    assert win.controller.engine.config.contact_model.endswith("contact_presets/cnn")
+    from pinchpilot.contact_live import PRESETS
+
+    assert Path(win.controller.engine.config.contact_model) == PRESETS / "cnn"
     assert not win.controller.active
     choice.setCurrentIndex(choice.findData("builtin:rules"))
     assert win.controller.engine.contacts.model.kind == "rules"
