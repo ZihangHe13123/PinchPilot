@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .app import STYLE, Job
+from .contact_live import DEFAULT_CHOICE, resolve
 from .desktop_control import DesktopController
 from .framing_overlay import FramingOverlay
 from .metrics_window import MetricsWindow
@@ -256,7 +257,7 @@ class DesktopWindow(QMainWindow):
         self.contact_source = QComboBox()
         source_row.addWidget(self.contact_source, 1)
         advanced_layout.addLayout(source_row)
-        self._list_contact_models()
+        self._list_contact_models(DEFAULT_CHOICE)
         self.calibration_button = QPushButton("6 秒静止校准")
         self.calibration_button.clicked.connect(self._toggle_calibration)
         advanced_layout.addWidget(self.calibration_button)
@@ -379,12 +380,14 @@ class DesktopWindow(QMainWindow):
         }
 
     def _list_contact_models(self, keep=""):
-        """Offer the built-in thresholds and every fitted model in the workspace."""
-        from .contact_live import find_models
+        """Offer the shipped models, the fixed thresholds and every model in the workspace."""
+        from .contact_live import builtin_models, find_models
 
         models, problems = find_models(self.workspace / "data" / "contact_models")
         self.contact_source.blockSignals(True)
         self.contact_source.clear()
+        for text, choice, _ in builtin_models():
+            self.contact_source.addItem(text, choice)
         self.contact_source.addItem("现有规则 · 固定的距离阈值", "")
         for text, folder, _ in models:
             self.contact_source.addItem(text, folder)
@@ -392,8 +395,8 @@ class DesktopWindow(QMainWindow):
         self.contact_source.setCurrentIndex(max(index, 0))
         self.contact_source.blockSignals(False)
         tip = (
-            "谁来判断食指、无名指有没有碰到拇指。模型只接管“碰到”这一步，松开仍看距离；"
-            "模型放在工作区的 data/contact_models 文件夹里，每个模型一个子文件夹。"
+            "谁来判断食指、无名指有没有碰到拇指。默认是内置的时序 CNN；模型只接管“碰到”这一步，"
+            "松开仍看距离。自己的模型放在工作区的 data/contact_models 文件夹里，每个模型一个子文件夹。"
         )
         if problems:
             tip += "\n读不出来、已跳过：" + "；".join(problems)
@@ -428,13 +431,15 @@ class DesktopWindow(QMainWindow):
                 settings.get("rest_noise_x", 0.0), settings.get("rest_noise_y", 0.0)
             )
             self.tripod_controls.restore_wrist_calibration(settings.get("wrist_calibration", ()))
-            chosen = settings.get("contact_model", "")
-            if isinstance(chosen, str) and chosen:
-                index = self.contact_source.findData(chosen)
-                if index >= 0:
-                    self.contact_source.setCurrentIndex(index)
-                else:
+            if "contact_model" in settings:
+                # A saved choice wins, the fixed thresholds ("") included; without one the
+                # shipped default chosen when the list was built stands.
+                chosen = settings["contact_model"]
+                index = self.contact_source.findData(chosen) if isinstance(chosen, str) else -1
+                if index < 0:
+                    index = self.contact_source.findData("")
                     self.controller.notice = "上次选的接触模型找不到了，已改回现有规则。"
+                self.contact_source.setCurrentIndex(index)
             if (
                 settings.get("pointer_basis") == "wrist"
                 and settings.get("unified_mode_seen") is not True
@@ -529,7 +534,7 @@ class DesktopWindow(QMainWindow):
             right_enabled=self.right.isChecked(),
             drag_enabled=self.drag.isChecked(),
             scroll_enabled=self.scroll.isChecked(),
-            contact_model=self.contact_source.currentData() or "",
+            contact_model=resolve(self.contact_source.currentData() or ""),
         )
         try:
             self.controller.configure(config)

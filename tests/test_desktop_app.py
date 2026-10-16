@@ -661,14 +661,26 @@ def test_contact_source_offers_fitted_models_applies_one_and_remembers_it(applic
     win.timer.stop()
     choice = win.contact_source
     assert [choice.itemText(i) for i in range(choice.count())] == [
+        "时序 CNN · 内置",
+        "调过的规则 · 内置",
         "现有规则 · 固定的距离阈值",
         "调过的规则 · 用 P01、P02、P03 训练",
         "调过的规则 · 训练时不含 P01 · 近的",
     ]
     assert "broken" in choice.toolTip()
-    # Nothing is chosen for the user: the thresholds decide until they pick a model.
-    assert choice.currentData() == "" and win.controller.engine.contacts is None
+    # A new user starts with the shipped temporal CNN; control stays off as always.
+    assert (
+        choice.currentData() == "builtin:cnn" and win.controller.engine.contacts.model.kind == "cnn"
+    )
+    from pinchpilot.contact_live import PRESETS
+
+    assert Path(win.controller.engine.config.contact_model) == PRESETS / "cnn"
     assert not win.controller.active
+    choice.setCurrentIndex(choice.findData("builtin:rules"))
+    assert win.controller.engine.contacts.model.kind == "rules"
+    choice.setCurrentIndex(choice.findData(""))
+    assert win.controller.engine.contacts is None  # The fixed thresholds.
+    assert json.loads(win.settings_path.read_text(encoding="utf-8"))["contact_model"] == ""
 
     choice.setCurrentIndex(choice.findData(mine))
     engine = win.controller.engine
@@ -689,7 +701,7 @@ def test_contact_source_offers_fitted_models_applies_one_and_remembers_it(applic
     assert second.controller.engine.contacts is not None and not second.controller.active
     # A model that stops loading after it was listed: back to the thresholds, and said so.
     (Path(mine) / "model.json").write_text("{}", encoding="utf-8")
-    second.contact_source.setCurrentIndex(0)
+    second.contact_source.setCurrentIndex(second.contact_source.findData(""))
     second.contact_source.blockSignals(True)
     second.contact_source.addItem("坏掉的", mine)
     second.contact_source.blockSignals(False)
@@ -709,3 +721,20 @@ def test_contact_source_offers_fitted_models_applies_one_and_remembers_it(applic
     assert third.contact_source.currentData() == "" and third.controller.engine.contacts is None
     assert "接触模型找不到了" in third.controller.notice
     third.close()
+
+
+def test_a_saved_choice_of_the_fixed_thresholds_survives_the_new_default(application, tmp_path):
+    settings = tmp_path / "data" / "desktop-settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"contact_model": ""}), encoding="utf-8")
+    kept = desktop.DesktopWindow(tmp_path)
+    kept.timer.stop()
+    assert kept.contact_source.currentData() == "" and kept.controller.engine.contacts is None
+    kept.close()
+    # Settings from before the dropdown existed have no choice: the default applies.
+    settings.write_text(json.dumps({"right": True}), encoding="utf-8")
+    fresh = desktop.DesktopWindow(tmp_path)
+    fresh.timer.stop()
+    assert fresh.contact_source.currentData() == "builtin:cnn"
+    assert fresh.controller.engine.contacts.model.kind == "cnn"
+    fresh.close()

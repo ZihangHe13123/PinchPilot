@@ -510,3 +510,32 @@ def test_a_model_folder_can_hide_what_it_is_and_can_stand_for_the_builtin_thresh
     assert kinds(standing_in) == kinds(without) == ["down", "up"]
     assert standing_in.result.state == without.result.state
     assert standing_in.result.prediction.source == "tripod-rules"
+
+
+def test_the_shipped_models_load_without_torch_and_say_how_they_were_fitted():
+    shipped = contact_live.builtin_models()
+    assert [(text, choice) for text, choice, _ in shipped] == [
+        ("时序 CNN · 内置", "builtin:cnn"),
+        ("调过的规则 · 内置", "builtin:rules"),
+    ]
+    assert contact_live.DEFAULT_CHOICE == "builtin:cnn"
+    for _, choice, model in shipped:
+        record = model.record
+        assert record["trained_on"] == ["P01", "P02", "P03"] and record["excluded"] is None
+        assert record["labels"] == "reviewed" and record["source"] == "camera"
+        assert contact_live.resolve(choice) == str(contact_live.PRESETS / choice.split(":")[1])
+        assert model.decide(windows(4)).shape == (4, 3)
+    cnn = shipped[0][2]
+    assert cnn.record["candidate"] == "旋转＋缩放＋噪声" and cnn.options["epochs"] == 22
+    assert shipped[1][2].record["candidate"] == "食指用画面内距离＋只取近的"
+    assert contact_live.resolve("") == "" and contact_live.resolve("/some/folder") == "/some/folder"
+    with pytest.raises(ValueError, match="没有这个内置模型"):
+        contact_live.resolve("builtin:forest")
+    code = (
+        "import sys\n"
+        "from pinchpilot.contact_live import builtin_models\n"
+        "assert len(builtin_models()) == 2\n"
+        "print(sorted(name for name in ('torch', 'sklearn') if name in sys.modules))\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert done.stdout.strip() == "[]"

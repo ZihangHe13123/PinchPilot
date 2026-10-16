@@ -1,0 +1,47 @@
+{
+  "schema": "pinchpilot-live-contacts-v1",
+  "app_version": "0.18.0",
+  "model": "rules",
+  "candidate": "食指用画面内距离＋只取近的",
+  "options": {
+    "frames": 1,
+    "stride": 1,
+    "label_fraction": 1.0,
+    "statistic": "last",
+    "flat_middle": false,
+    "flat_index": true,
+    "flat_ring": false,
+    "nearest": true
+  },
+  "seed": 42,
+  "trained_on": [
+    "P01",
+    "P02",
+    "P03"
+  ],
+  "excluded": null,
+  "training_windows": 205141,
+  "pool_fingerprint": "045cd107c1e0bdb1f6f89c3d11d9283d813f4391b4f9f847b889844b296397a6",
+  "source": "camera",
+  "labels": "reviewed",
+  "feature_version": "contact-v1",
+  "window_config": {
+    "frames": 8,
+    "max_gap_seconds": 0.12,
+    "max_window_seconds": 0.8
+  },
+  "channels": [
+    "middle",
+    "index",
+    "ring"
+  ],
+  "threshold": 0.5,
+  "evidence": "fitted_not_scored",
+  "thresholds": [
+    0.6144846081733704,
+    0.23390348255634308,
+    0.4169198274612427
+  ],
+  "alias": "调过的规则 · 内置",
+  "note": "Shipped with the app: fitted on all three participants' reviewed recordings. Its expected quality on a new person is the leave-one-person-out test score in docs/VALIDATION.md."
+}
