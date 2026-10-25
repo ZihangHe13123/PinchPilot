@@ -59,6 +59,8 @@ def draw_progress(painter, point, progress):
 
 
 class CameraView(QWidget):
+    double_clicked = Signal()
+
     def __init__(self):
         super().__init__()
         self.setMinimumSize(420, 300)
@@ -68,6 +70,10 @@ class CameraView(QWidget):
         self.demo = False
         self.box = (0.2, 0.2, 0.8, 0.8)
         self.frame_edges = ()
+
+    def mouseDoubleClickEvent(self, event):
+        self.double_clicked.emit()
+        super().mouseDoubleClickEvent(event)
 
     def set_frame(self, rgb, frame: HandFrame, result: EngineResult, demo: bool = False):
         if rgb is not None:

@@ -9,6 +9,8 @@ from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
+LANG_HELP = "界面语言：zh 中文（默认）或 en 英文；也可以设环境变量 PINCHPILOT_LANG=en"
+
 
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(prog="pinchpilot", description="PinchPilot 摄像头捏合交互原型")
@@ -24,11 +26,13 @@ def parser() -> argparse.ArgumentParser:
     )
     gui.add_argument("--smoke-seconds", type=float, help="在指定秒数后关闭，用于界面检查")
     gui.add_argument("--screenshot", type=Path, help="保存本程序窗口的截图")
+    gui.add_argument("--lang", choices=("zh", "en"), help=LANG_HELP)
     desktop = sub.add_parser("desktop", help="日常桌面测试工具：拇中定位、左右键与拖拽")
     desktop.add_argument("--workspace", type=Path, default=Path.cwd())
     desktop.add_argument("--demo", action="store_true", help="合成演示，禁止系统鼠标输出")
     desktop.add_argument("--smoke-seconds", type=float)
     desktop.add_argument("--screenshot", type=Path)
+    desktop.add_argument("--lang", choices=("zh", "en"), help=LANG_HELP)
     doctor = sub.add_parser("doctor", help="检查运行环境；不打开摄像头")
     doctor.add_argument("--output", type=Path)
     download = sub.add_parser("fetch-model", help="下载 Google 官方手部模型")
@@ -108,6 +112,7 @@ def parser() -> argparse.ArgumentParser:
     review.add_argument("--status", action="store_true", help="只列出各段录制的检查进度")
     review.add_argument("--smoke-seconds", type=float, help="到时自动退出，仅用于启动检查")
     review.add_argument("--screenshot", type=Path, help="启动后保存一张窗口截图")
+    review.add_argument("--lang", choices=("zh", "en"), help=LANG_HELP)
     shadow = sub.add_parser("ml-shadow", help="离线旁路比较模型与几何规则；只加载可信的本地模型")
     shadow.add_argument("recording", type=Path)
     shadow.add_argument("--model", type=Path, required=True)
@@ -166,6 +171,10 @@ def main(argv=None) -> int:
     args = cli.parse_args(argv)
     if args.command is None:
         args = cli.parse_args(["gui"])
+    if args.command in ("desktop", "gui") or (args.command == "ml-review" and not args.status):
+        from .ui_lang import install
+
+        install(args.lang)  # before any window module is imported
     try:
         if args.command == "desktop":
             from .desktop import run_desktop

@@ -49,6 +49,18 @@ class MouseSession:
             if self.active:
                 self.last_heartbeat = self.clock()
 
+    def allow_pause(self, seconds):
+        """Accept one interface pause of up to `seconds`, for a window change the user asked for.
+
+        Changing a window's flags recreates it, which can stall the interface thread longer than the
+        heartbeat timeout. The Esc check keeps running meanwhile, and a longer stall still stops output.
+        """
+        with self.lock:
+            if self.active:
+                self.last_heartbeat = max(
+                    self.last_heartbeat, self.clock() + seconds - self.HEARTBEAT_TIMEOUT
+                )
+
     def emit(self, events):
         with self.lock:
             self.poll()
