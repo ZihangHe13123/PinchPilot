@@ -738,3 +738,32 @@ def test_a_saved_choice_of_the_fixed_thresholds_survives_the_new_default(applica
     assert fresh.contact_source.currentData() == "builtin:cnn"
     assert fresh.controller.engine.contacts.model.kind == "cnn"
     fresh.close()
+
+
+def test_mini_view_keeps_only_the_preview_on_top_and_comes_back(window, application):
+    window.resize(980, 700)
+    window.show()
+    application.processEvents()
+    full = window.geometry()
+    window.preview.setChecked(False)
+    window.toggle_mini()
+    application.processEvents()
+    assert window.mini and window.camera_view.isVisible() and window.full_button.isVisible()
+    assert not window.side.isVisible() and not window.notice.isVisible()
+    assert not any(label.isVisible() for label in window.metrics_labels.values())
+    assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert window.size() == QSize(*desktop.MINI_SIZE)
+    corner = window.screen().availableGeometry().bottomRight()
+    assert (corner - window.frameGeometry().bottomRight()).manhattanLength() < 80
+    window.move(window.pos() - QPoint(100, 50))
+    moved = window.pos()
+    window.camera_view.double_clicked.emit()
+    application.processEvents()
+    assert not window.mini and window.side.isVisible() and not window.full_button.isVisible()
+    assert not window.camera_view.isVisible()  # the preview stays as the check box left it
+    assert not window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert window.geometry() == full
+    window.toggle_mini(True)
+    application.processEvents()
+    assert window.pos() == moved  # it comes back where it was moved to
+    window.toggle_mini(False)

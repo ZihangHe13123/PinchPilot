@@ -37,6 +37,10 @@ from .vision import CameraWorker, Packet, default_model_path, fetch_model
 from .widgets import CameraView
 from .wrist_guide import WristPoseGuide
 
+MINI_SIZE = (380, 420)  # the mini view's window, with a 4:3 preview of about 360 x 270
+MINI_PREVIEW = (240, 180)
+FULL_PREVIEW = (420, 300)
+
 
 class DesktopWindow(QMainWindow):
     camera_authorized = Signal(int, bool)
@@ -58,6 +62,9 @@ class DesktopWindow(QMainWindow):
         self.metrics_window = None
         self.last_render = 0
         self.control_hand_status = "相机关闭"
+        self.mini = False
+        self._full_geometry = None
+        self._mini_pos = None
         self._calibration_seen = None
         self._calibration_summary = ""
         self._wrist_calibration_seen = None
@@ -79,6 +86,8 @@ class DesktopWindow(QMainWindow):
         self.issue_shortcut = QShortcut(QKeySequence("F8"), self)
         self.issue_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.issue_shortcut.activated.connect(self.mark_issue)
+        self.mini_shortcut = QShortcut(QKeySequence("F9"), self)
+        self.mini_shortcut.activated.connect(self.toggle_mini)
         self.timer = QTimer(self)
         self.timer.setInterval(20)
         self.timer.timeout.connect(self._tick)
@@ -95,12 +104,12 @@ class DesktopWindow(QMainWindow):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(12)
         heading = QHBoxLayout()
-        title = QLabel("PinchPilot")
-        title.setObjectName("title")
-        heading.addWidget(title)
-        subtitle = QLabel(f"桌面测试版  {__version__}  ·  主屏幕")
-        subtitle.setObjectName("subtitle")
-        heading.addWidget(subtitle)
+        self.title = QLabel("PinchPilot")
+        self.title.setObjectName("title")
+        heading.addWidget(self.title)
+        self.subtitle = QLabel(f"桌面测试版  {__version__}  ·  主屏幕")
+        self.subtitle.setObjectName("subtitle")
+        heading.addWidget(self.subtitle)
         heading.addStretch()
         self.chip = QLabel("预览 · 未接管鼠标")
         self.chip.setObjectName("chip")
@@ -111,11 +120,16 @@ class DesktopWindow(QMainWindow):
         body.setSpacing(18)
         left = QVBoxLayout()
         self.camera_view = CameraView()
+        self.camera_view.double_clicked.connect(self.toggle_mini)
         left.addWidget(self.camera_view, 1)
         self.gesture = QLabel()
         self.gesture.setObjectName("notice")
         self.gesture.setWordWrap(True)
         left.addWidget(self.gesture)
+        self.full_button = QPushButton("恢复完整窗口 · F9")
+        self.full_button.clicked.connect(lambda: self.toggle_mini(False))
+        self.full_button.hide()
+        left.addWidget(self.full_button)
         grid = QGridLayout()
         self.metrics_labels = {}
         for i, (key, label) in enumerate(
@@ -140,6 +154,7 @@ class DesktopWindow(QMainWindow):
         side = QWidget()
         side.setObjectName("side")
         side.setFixedWidth(305)
+        self.side = side
         controls = QVBoxLayout(side)
         controls.setContentsMargins(0, 0, 0, 0)
         self.camera_button = QPushButton("启动相机")
@@ -203,6 +218,12 @@ class DesktopWindow(QMainWindow):
         ):
             option.setChecked(option is not self.on_top)
             controls.addWidget(option)
+        self.mini_button = QPushButton("小窗模式 · F9")
+        self.mini_button.setToolTip(
+            "只留摄像头预览和当前状态，窗口置顶、占地小；双击预览或按 F9 恢复。"
+        )
+        self.mini_button.clicked.connect(lambda: self.toggle_mini(True))
+        controls.addWidget(self.mini_button)
         privacy = QLabel("记录性能、状态和按钮事件；不保存相机图像。")
         privacy.setObjectName("subtitle")
         privacy.setWordWrap(True)
@@ -751,9 +772,58 @@ class DesktopWindow(QMainWindow):
         self._save_settings()
 
     def _toggle_top(self, enabled):
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled or self.mini)
         self.show()
         self._save_settings()
+
+    def toggle_mini(self, enabled=None):
+        """Mini view: only the camera preview, the state and a way back, in a small window kept on top.
+
+        The full window comes back with F9, a double click on the preview or the button under it, at the
+        size and place it had. Nothing about control changes.
+        """
+        enabled = not self.mini if enabled is None else bool(enabled)
+        if enabled == self.mini:
+            return
+        if enabled:
+            self._full_geometry = self.geometry()
+        else:
+            self._mini_pos = self.pos()
+        self.mini = enabled
+        for widget in (
+            self.title,
+            self.subtitle,
+            self.side,
+            self.notice,
+            *self.metrics_labels.values(),
+        ):
+            widget.setVisible(not enabled)
+        self.full_button.setVisible(enabled)
+        self.camera_view.setVisible(enabled or self.preview.isChecked())
+        self.camera_view.setMinimumSize(*(MINI_PREVIEW if enabled else FULL_PREVIEW))
+        self.centralWidget().layout().setContentsMargins(
+            *((8, 6, 8, 8) if enabled else (22, 18, 22, 18))
+        )
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled or self.on_top.isChecked())
+        self.show()
+        # After show(): a window whose flags changed gets its native geometry back only then.
+        if enabled:
+            self._place_mini()
+            QTimer.singleShot(0, lambda: self.mini and self._place_mini())
+        elif self._full_geometry is not None:
+            geometry = self._full_geometry
+            self.setGeometry(geometry)
+            QTimer.singleShot(0, lambda: self.mini or self.setGeometry(geometry))
+
+    def _place_mini(self):
+        """The mini view's size, where it was last time, or else the bottom-right corner of the screen."""
+        self.resize(*MINI_SIZE)
+        if self._mini_pos is not None:
+            self.move(self._mini_pos)
+            return
+        area = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        frame = self.frameGeometry()
+        self.move(area.right() - frame.width() - 24, area.bottom() - frame.height() - 24)
 
     def _toggle_logging(self, enabled):
         self.controller.metrics.set_logging(
@@ -907,7 +977,7 @@ class DesktopWindow(QMainWindow):
                         self.controller.result, self.controller.clock(), self.controller.source
                     )
                 self.control_hand_status = packet.hand_status or self.control_hand_status
-                if self.preview.isChecked() and not self.isMinimized():
+                if (self.preview.isChecked() or self.mini) and not self.isMinimized():
                     self.camera_view.box = self.controller.engine.active_box
                     self.camera_view.set_frame(
                         packet.rgb,
