@@ -187,6 +187,7 @@ def audit_source_archive(
 def audit(package: Path, site: Path, version: str, commit: str) -> dict:
     required = [
         "Start.cmd",
+        "Start-English.cmd",
         "Demo.cmd",
         "Diagnose.cmd",
         "portable.py",

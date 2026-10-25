@@ -135,6 +135,9 @@ def diagnose(root: Path, folder: Path) -> int:
 def main(argv=None, root=None) -> int:
     cli = argparse.ArgumentParser()
     cli.add_argument("mode", choices=("start", "demo", "diagnose"))
+    cli.add_argument(
+        "--lang", choices=("zh", "en"), help="interface language; Start-English uses en"
+    )
     args = cli.parse_args(argv)
     root = Path(root or Path(__file__).resolve().parent).resolve()
     configure(root)
@@ -152,6 +155,8 @@ def main(argv=None, root=None) -> int:
         arguments = ["-m", "pinchpilot", "desktop", "--workspace", str(root)]
         if args.mode == "demo":
             arguments += ["--demo"]
+        if args.lang:
+            arguments += ["--lang", args.lang]
         print("Starting PinchPilot. Close its window to exit.", flush=True)
         code = execute(arguments, root, log)
         if code:
