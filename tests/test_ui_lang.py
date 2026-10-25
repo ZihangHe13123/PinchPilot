@@ -55,6 +55,13 @@ def test_fixed_and_composed_texts_translate(english):
         == "Palm-to-camera angle: now about 61°; this round needs 55° or more ✓"
     )
     assert tr("时序 CNN · 内置") == "Temporal CNN · built-in"
+    assert tr("手靠近画面右侧 · 松中指，将手移回画面中央，再捏住继续。") == (
+        "Hand near the right edge · Release the middle finger, move the hand back to the centre, "
+        "then pinch to continue."
+    )
+    assert tr("手靠近画面左侧、上沿 · 先完成当前点击，再松中指换位。").startswith(
+        "Hand near the left, top edge · "
+    )
     assert tr("已看 3/60，其中作废 1。进度会自动保存，可以随时关掉再继续。") == (
         "Seen 3/60, voided 1. Progress is saved automatically; you can close and continue later."
     )

@@ -761,7 +761,8 @@ PATTERNS = [
         r"模型文件校验失败，请移除后重下：(.*)",
         "The model file failed its check; remove it and download again: {0}",
     ),
-    (r"手靠近画面(.+)", "Hand near the {0} edge"),
+    # Only the edge names: the advice after " · " is translated on its own.
+    (r"手靠近画面([^ ·]+)", "Hand near the {0} edge"),
     (r"丢失 (\d+)", "lost {0}"),
     (r"左 (\d+)", "left {0}"),
     (r"右 (\d+)", "right {0}"),
