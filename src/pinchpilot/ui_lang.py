@@ -76,7 +76,7 @@ TEXTS = {
     ),
     "展开手感设置 ▾": "Show feel settings ▾",
     "收起手感设置 ▴": "Hide feel settings ▴",
-    "接触判定": "Contact recognition",
+    "接触判定": "Contact model",
     "现有规则 · 固定的距离阈值": "Original rule · fixed distance thresholds",
     "谁来判断食指、无名指有没有碰到拇指。默认是内置的时序 CNN；模型只接管“碰到”这一步，松开仍看距离。自己的模型放在工作区的 data/contact_models 文件夹里，每个模型一个子文件夹。": (
         "What decides whether the index or ring finger touches the thumb. The default is the built-in temporal "
