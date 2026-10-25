@@ -84,6 +84,7 @@ def macho_architectures(path):
 def audit(package, site):
     required = (
         "Start.command",
+        "Start-English.command",
         "Demo.command",
         "Diagnose.command",
         "launch.sh",

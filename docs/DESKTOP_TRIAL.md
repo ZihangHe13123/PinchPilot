@@ -1,4 +1,4 @@
-# PinchPilot 0.19.0 桌面测试版
+# PinchPilot 0.20.0 桌面测试版
 
 「ML 关键点采集」默认按屏幕提示分段录制：共60段，每段读完提示后按空格开始、到时间自动停，纯录制约14分钟，步骤见 [RECORDING_PROTOCOL.md](RECORDING_PROTOCOL.md)。日常操控没有变化。
 
@@ -10,11 +10,11 @@ v0.12.0 源码增加「打开交互测试台」「查看诊断与分段耗时」
 
 ## 启动和接管
 
-两平台便携归档和源码入口都是 v0.19.0。旧 ZIP 和旧对照报告原样保留。先按 Esc、退出旧窗口，再打开相应入口，确认标题版本。
+两平台便携归档和源码入口都是 v0.20.0。旧 ZIP 和旧对照报告原样保留。先按 Esc、退出旧窗口，再打开相应入口，确认标题版本。
 
-Mac 便携归档：M 系列 Mac（macOS 14+）解压 `PinchPilot-0.19.0-macOS-arm64.zip` 后双击 `Start.command`，从下面第 2 步继续，无需 uv；见 [Mac 归档说明](MACOS_ARCHIVE.md)。
+Mac 便携归档：M 系列 Mac（macOS 14+）解压 `PinchPilot-0.20.0-macOS-arm64.zip` 后双击 `Start.command`（英文界面用 `Start-English.command`），从下面第 2 步继续，无需 uv；见 [Mac 归档说明](MACOS_ARCHIVE.md)。
 
-Windows 便携包：先全部解压 `PinchPilot-0.19.0-Windows-x64.zip`，双击 `Start.cmd`，之后从下面第 2 步开始。包内已含运行时、依赖和模型，详细步骤与故障诊断见 [Windows 试用说明](WINDOWS_TRIAL.md)。下面的 `launch_*` 脚本适用于源码环境。
+Windows 便携包：先全部解压 `PinchPilot-0.20.0-Windows-x64.zip`，双击 `Start.cmd`（英文界面用 `Start-English.cmd`），之后从下面第 2 步开始。包内已含运行时、依赖和模型，详细步骤与故障诊断见 [Windows 试用说明](WINDOWS_TRIAL.md)。下面的 `launch_*` 脚本适用于源码环境。
 
 1. 先退出占用相机的旧 Demo。Mac 双击 `launch_desktop_mac.command`；Windows 双击 `launch_desktop_windows.cmd`。命令行可执行 `uv run pinchpilot desktop`。
 2. 右侧「控制手」默认自动锁定，先只露出要操作的一只手，点「启动相机」，看到「已锁定右手 / 左手」后另一只手可入镜。也可提前选择「只用右手 / 只用左手」。支撑前臂，让相机看清整只手和指尖；相机编号在「展开手感设置」中调整。

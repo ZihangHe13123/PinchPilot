@@ -41,6 +41,7 @@ def main():
         checks["file_hashes_verified"] = files
         for name in (
             "Start.command",
+            "Start-English.command",
             "Demo.command",
             "Diagnose.command",
             "launch.sh",

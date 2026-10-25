@@ -68,6 +68,26 @@ def test_normal_start_is_explicit_desktop_without_auto_control(portable, tmp_pat
     assert root == tmp_path and log.parent == tmp_path / "reports/startup"
 
 
+def test_english_start_opens_the_desktop_in_english(portable, tmp_path, monkeypatch):
+    install_fake_model(tmp_path, monkeypatch)
+    execute = Mock(return_value=0)
+    monkeypatch.setattr(portable, "execute", execute)
+    assert portable.main(["start", "--lang", "en"], root=tmp_path) == 0
+    arguments = execute.call_args.args[0]
+    assert arguments == [
+        "-m",
+        "pinchpilot",
+        "desktop",
+        "--workspace",
+        str(tmp_path),
+        "--lang",
+        "en",
+    ]
+    launchers = Path(__file__).resolve().parents[1] / "scripts"
+    assert "start --lang en" in (launchers / "macos/Start-English.command").read_text()
+    assert "start --lang en" in (launchers / "windows/Start-English.cmd").read_text()
+
+
 def test_child_failure_captures_unicode_stderr(portable, tmp_path):
     folder = tmp_path / "中文 路径"
     folder.mkdir()
