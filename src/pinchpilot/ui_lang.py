@@ -258,7 +258,7 @@ TEXTS = {
     "正在接管 · 保持拇中捏合，食指在外侧": "Taking over · keep thumb and middle pinched, index outside",
     "捏合暂不稳定 · 指针已暂停，请先分开点击手指": "Pinch unsteady · pointer paused; separate the clicking fingers first",
     # feel settings (tripod_controls)
-    "兼容定位 · 平移＋转腕": "Compatible · move + turn",
+    "兼容定位 · 平移＋转腕": "Compatible · move+turn",
     "指尖位置 · 原版对照": "Fingertip position · original, for comparison",
     "腕动角度 · 旧实验": "Wrist angle · old experiment",
     "兼容定位沿用画面方向，平移和自然转腕均可移动，无需方向校准。原位置和角度模式可选作对照。": (

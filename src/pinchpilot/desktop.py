@@ -37,6 +37,15 @@ from .vision import CameraWorker, Packet, default_model_path, fetch_model
 from .widgets import CameraView
 from .wrist_guide import WristPoseGuide
 
+
+def fit_choice(combo):
+    """Let a choice box narrow to the side panel while its open list still shows every item whole."""
+    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(8)
+    combo.view().setTextElideMode(Qt.TextElideMode.ElideNone)
+    combo.view().setMinimumWidth(combo.view().sizeHintForColumn(0) + 28)
+
+
 MINI_SIZE = (380, 420)  # the mini view's window, with a 4:3 preview of about 360 x 270
 MINI_PREVIEW = (240, 180)
 FULL_PREVIEW = (420, 300)
@@ -193,6 +202,8 @@ class DesktopWindow(QMainWindow):
         self.settings_area = QScrollArea()
         self.settings_area.setWidgetResizable(True)
         self.settings_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        # The panel has a fixed width; longer labels (the English interface) wrap or narrow instead.
+        self.settings_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         settings_content = QWidget()
         settings_content.setObjectName("side")
         self.settings_area.setWidget(settings_content)
@@ -367,6 +378,8 @@ class DesktopWindow(QMainWindow):
         controls.addWidget(self.advanced)
         self.advanced_button.toggled.connect(self._show_advanced)
         controls.addStretch()
+        for choice in side.findChildren(QComboBox):
+            fit_choice(choice)
         body.addWidget(side)
         layout.addLayout(body, 1)
         self.notice = QLabel()
@@ -415,6 +428,7 @@ class DesktopWindow(QMainWindow):
         index = self.contact_source.findData(keep)
         self.contact_source.setCurrentIndex(max(index, 0))
         self.contact_source.blockSignals(False)
+        fit_choice(self.contact_source)
         tip = (
             "谁来判断食指、无名指有没有碰到拇指。默认是内置的时序 CNN；模型只接管“碰到”这一步，"
             "松开仍看距离。自己的模型放在工作区的 data/contact_models 文件夹里，每个模型一个子文件夹。"
