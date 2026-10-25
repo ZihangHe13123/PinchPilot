@@ -763,6 +763,7 @@ PATTERNS = [
     ),
     # Only the edge names: the advice after " · " is translated on its own.
     (r"手靠近画面([^ ·]+)", "Hand near the {0} edge"),
+    (r"检查中 (\d+)/(\d+)", "in review {0}/{1}"),
     (r"丢失 (\d+)", "lost {0}"),
     (r"左 (\d+)", "left {0}"),
     (r"右 (\d+)", "right {0}"),

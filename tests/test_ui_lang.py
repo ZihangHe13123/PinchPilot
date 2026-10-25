@@ -55,6 +55,7 @@ def test_fixed_and_composed_texts_translate(english):
         == "Palm-to-camera angle: now about 61°; this round needs 55° or more ✓"
     )
     assert tr("时序 CNN · 内置") == "Temporal CNN · built-in"
+    assert tr("P01 · a.zip · 检查中 3/60") == "P01 · a.zip · in review 3/60"
     assert tr("手靠近画面右侧 · 松中指，将手移回画面中央，再捏住继续。") == (
         "Hand near the right edge · Release the middle finger, move the hand back to the centre, "
         "then pinch to continue."
@@ -150,6 +151,8 @@ def test_english_windows_show_no_chinese(tmp_path):
         review.show()
         settle(review)
         review.next_button.click()
+        settle(review)
+        review.accept_button.click()  # a saved decision puts "in review 1/N" in the picker
         settle(review)
         review_left = shown(review)
         review.close()
