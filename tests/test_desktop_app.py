@@ -767,3 +767,23 @@ def test_mini_view_keeps_only_the_preview_on_top_and_comes_back(window, applicat
     application.processEvents()
     assert window.pos() == moved  # it comes back where it was moved to
     window.toggle_mini(False)
+
+
+def test_mini_view_does_not_stop_control_while_the_window_is_recreated(
+    window, application, monkeypatch
+):
+    window.show()
+    window.rig.live()
+    recreate = window.setWindowFlag
+
+    def slow(*args):
+        window.rig.clock.now += 0.8  # macOS takes this long to rebuild the window
+        recreate(*args)
+
+    monkeypatch.setattr(window, "setWindowFlag", slow)
+    window.toggle_mini(True)
+    window.rig.frames(3)
+    assert window.controller.active
+    window.toggle_mini(False)
+    window.rig.frames(3)
+    assert window.controller.active

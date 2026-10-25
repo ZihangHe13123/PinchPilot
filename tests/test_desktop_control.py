@@ -240,6 +240,19 @@ def test_heartbeat_renewal_cannot_revive_a_stalled_session(rig):
     assert rig.control.session.snapshot()["reason"] == "gui_heartbeat_timeout"
 
 
+def test_an_announced_window_change_may_pause_the_interface_but_not_longer(rig):
+    rig.live()
+    rig.control.session.allow_pause(2.0)
+    rig.clock.now += 1.5  # Qt recreating the window
+    rig.frames(2)
+    assert rig.control.active
+    rig.control.session.allow_pause(2.0)
+    rig.clock.now += 2.5
+    rig.frames(2)
+    assert not rig.control.active
+    assert rig.control.session.snapshot()["reason"] == "gui_heartbeat_timeout"
+
+
 def test_switches_do_not_freeze_movement_or_turn_a_long_click_into_drag(rig):
     rig.control.configure(
         replace(rig.control.engine.config, right_enabled=False, drag_enabled=False)

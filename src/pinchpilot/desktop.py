@@ -46,6 +46,7 @@ def fit_choice(combo):
     combo.view().setMinimumWidth(combo.view().sizeHintForColumn(0) + 28)
 
 
+WINDOW_CHANGE_PAUSE = 2.0  # seconds the interface may stall while a window is recreated
 MINI_SIZE = (380, 420)  # the mini view's window, with a 4:3 preview of about 360 x 270
 MINI_PREVIEW = (240, 180)
 FULL_PREVIEW = (420, 300)
@@ -785,9 +786,17 @@ class DesktopWindow(QMainWindow):
             self.camera_view.image = None
         self._save_settings()
 
-    def _toggle_top(self, enabled):
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled or self.mini)
+    def _set_on_top(self, enabled):
+        """Keep the window on top or not, without control stopping while Qt recreates the window."""
+        if bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) == enabled:
+            return
+        if self.controller.session is not None:
+            self.controller.session.allow_pause(WINDOW_CHANGE_PAUSE)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
         self.show()
+
+    def _toggle_top(self, enabled):
+        self._set_on_top(enabled or self.mini)
         self._save_settings()
 
     def toggle_mini(self, enabled=None):
@@ -818,8 +827,7 @@ class DesktopWindow(QMainWindow):
         self.centralWidget().layout().setContentsMargins(
             *((8, 6, 8, 8) if enabled else (22, 18, 22, 18))
         )
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled or self.on_top.isChecked())
-        self.show()
+        self._set_on_top(enabled or self.on_top.isChecked())
         # After show(): a window whose flags changed gets its native geometry back only then.
         if enabled:
             self._place_mini()
