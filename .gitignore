@@ -12,3 +12,6 @@ reports/
 *.joblib
 *.task
 *.log
+
+# Astra 运行时状态（会话交接稿、后台进程日志、改动快照）
+.astra/
