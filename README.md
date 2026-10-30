@@ -2,17 +2,31 @@
 
 用普通电脑摄像头进行捏合交互的课程研究原型。研究目标是：**以尽可能少的辅助动作和尽可能小的手部活动幅度，稳定完成桌面操控**，并检验误操作、响应速度和主观费力度。
 
-**当前源码版本 v0.20.0：新增英文界面（`--lang en`，便携包里双击 Start-English）和小窗模式（F9）。「接触判定」默认使用内置的时序 CNN，也可以换成内置的调过的规则或原来的固定阈值；三种设置在[内部试点](docs/PILOT.md)里比较过。四种接触模型（调过阈值的规则、随机森林、时序 CNN、手指共享 CNN）用留一人验证比较，设置已冻结；规则和两个 CNN 可以导出，并在桌面窗口的「接触判定」里切换。三指接触数据按屏幕提示分段录制，每段读完提示后自己开始、到时间自动停，用空格标记指尖接触；录制时实时检查手掌相对镜头的朝向，并可以只补录侧对的部分。** 步骤见 [手势数据录制说明](docs/RECORDING_PROTOCOL.md)。三位组员已各自在 Mac 或 Windows 上录过完整的一次；朝向检查和侧对补录是据这些录制加上的，还没有人用过。草稿标签的逐段复核和组员间抽查见 [标签检查说明](docs/LABEL_REVIEW.md)。多人数据上的模型比较（留一人验证，规则、随机森林和两种 CNN 共用一条命令）见 [模型训练与比较说明](docs/MODEL_COMPARISON.md)。这两部分目前只用合成数据跑通。v0.13 的三指 ML 关键点采集、人工标注接口、RF/因果 CNN 训练评测与离线旁路回放继续可用：已用合成数据跑通训练和加载，但尚无真人训练效果，模型尚未接入日常鼠标。详见 [ML 第一阶段指南](docs/CONTACT_ML.md)。v0.12的交互测试台、问题标记和分段耗时继续可用，见 [诊断与测试指南](docs/EVALUATION_TOOLS.md)。兼容定位、滤波和手势沿用 v0.11。
+**课程最终版 v0.20.0（2026-10-30 提交）。** 三位组员按屏幕提示录了 12 段手势数据（约 2.5 小时、205,141 个带复核标签的窗口；只存手部关键点，不存图像），在同一套留一人协议下比较了四种接触判定模型。所有设置在 10/13 冻结后只测了一次，随后用盲测试点选出默认模型。桌面程序支持 macOS 和 Windows，界面有中文和英文，可以切换只留摄像头预览的小窗。
+
+| 接触判定 | 留一人测试 macro-F1 |
+|---|---|
+| 调过的规则 | 0.885 |
+| 时序 CNN（默认） | 0.863 |
+| 手指共享 CNN | 0.860 |
+| 随机森林 | 0.840 |
+| 原来的固定阈值（基线） | 0.771 |
+
+侧对镜头的手是最难的情况：固定阈值降到 0.42，四个训练过的模型保持在 0.68–0.74。[内部试点](docs/PILOT.md)里三个人都把时序 CNN 排在第一（NASA-TLX 26.4，调过的规则 29.2，固定阈值 54.2），所以它是默认；调过的规则和固定阈值仍可在「接触判定」里切换。数字和过程见 [验证记录](docs/VALIDATION.md)，课程提案和第一次展示见 [docs/course](docs/course/README.md)。
+
+录制步骤见 [手势数据录制说明](docs/RECORDING_PROTOCOL.md)，标签的逐段复核和组员间抽查见 [标签检查说明](docs/LABEL_REVIEW.md)，模型比较见 [模型训练与比较说明](docs/MODEL_COMPARISON.md)，交互测试台和诊断见 [诊断与测试指南](docs/EVALUATION_TOOLS.md)。
 
 「兼容定位 · 平移＋转腕」沿用熟悉的画面位置方向，无需腕动方向校准。整手平移与自然转腕共用恒定增益精细滤波，掌部提供有界防抖辅助，握持增加姿态尺度处理及短暂异常后的原地恢复。见 [兼容定位试用](docs/COMPATIBLE_TRIAL.md) 和 [桌面完整说明](docs/DESKTOP_TRIAL.md)。
 
-## 立即启动桌面测试版
+## 下载和启动
 
 当前便携归档与源码同为 v0.20.0。旧便携包与对照报告按原样保留。退出旧窗口后启动，确认标题版本；归档没有复制开发机个人设置或试用日志。
 
-Windows 组员使用 `PinchPilot-0.20.0-Windows-x64.zip`：全部解压后双击 **Start.cmd**（英文界面双击 **Start-English.cmd**），无需安装 Python/uv，模型随包附带。详见 [Windows 试用说明](docs/WINDOWS_TRIAL.md)。
+便携包在 [Release v0.20.0](https://github.com/ZihangHe13123/PinchPilot/releases/tag/v0.20.0)。
 
-Mac 留档使用 `PinchPilot-0.20.0-macOS-arm64.zip`：适用于 M 系列 Mac、macOS 14+，解压后双击 **Start.command**（英文界面双击 **Start-English.command**）。两平台均带齐运行环境、模型、源码快照和SHA-256清单；详见 [Mac 归档说明](docs/MACOS_ARCHIVE.md)。构建命令：`uv run python scripts/build_macos_portable.py`。
+Windows 使用 `PinchPilot-0.20.0-Windows-x64.zip`：全部解压后双击 **Start.cmd**（英文界面双击 **Start-English.cmd**），无需安装 Python/uv，模型随包附带。详见 [Windows 试用说明](docs/WINDOWS_TRIAL.md)。
+
+Mac 使用 `PinchPilot-0.20.0-macOS-arm64.zip`：适用于 M 系列 Mac、macOS 14+，解压后双击 **Start.command**（英文界面双击 **Start-English.command**）。两平台均带齐运行环境、模型、源码快照和SHA-256清单；详见 [Mac 归档说明](docs/MACOS_ARCHIVE.md)。构建命令：`uv run python scripts/build_macos_portable.py`。
 
 源码方式：Mac 双击 **launch_desktop_mac.command**；Windows 双击 **launch_desktop_windows.cmd**。或在项目目录执行：
 
@@ -49,7 +63,7 @@ uv run pinchpilot desktop
 
 右侧「控制手」可选自动锁定、只用右手或只用左手。自动模式先只露出要控制的一只手，看到锁定提示后另一只手可入镜；控制手离开时暂停、释放按键，不自动换到另一只手。换手需重新启动相机，或更改控制手选项后启动相机。双手太近、遮挡或左右手类别不明确时会暂停，分开并重新捏住拇中后恢复。
 
-支持一只控制手、主屏幕，尚不支持跨屏。macOS 和 Windows 共用核心和界面，Windows 真机仍待验收。规则交互不等于已完成课程 ML 工作：桌面仍使用 MediaPipe 预训练跟踪加规则；新增自有接触 CNN 已通过合成训练流程，但还没有真人训练效果，后续仍需真实数据、模型对比、动作成本与舒适度实验。
+支持一只控制手、主屏幕，尚不支持跨屏。macOS 和 Windows 共用核心和界面；源码方式在两位组员的 Windows 笔记本上用于整个数据采集，Windows 便携包只做过构建时检查，还没在 Windows 电脑上运行过。接触判定默认用内置的时序 CNN：模型只判断“碰到”，松开仍看测得的距离，所以模型判错最多影响一次点击，不会让按键卡住。
 
 ## 研究界面与旧基线
 
@@ -126,7 +140,7 @@ uv run pinchpilot desktop
 - **Windows 相机：** 开启「隐私和安全性 → 摄像头 → 允许桌面应用访问摄像头」。被会议软件占用时先释放摄像头，必要时更换相机编号。
 - **Windows 输入：** 先在普通权限窗口测试。Win32 输入注入可能无法作用于管理员窗口。程序不自动提升权限。
 - **光标太抖 / 误捏合：** 改善光线、减少指尖遮挡、先做个人校准，再采集不同角度的数据。滤波和时间确认会增加少量延迟，需要实测取舍。
-- **看不到模型与训练：** 右侧控制栏可向下滚动。默认使用规则；有真实采集后才能训练自有分类器。
+- **找不到接触模型：** 点「展开手感设置」，右侧向下滚动到「接触判定」；默认是内置的时序 CNN，自己导出的模型放进工作区的 `data/contact_models/` 也会列出来。
 
 ## 技术栈
 
@@ -134,16 +148,30 @@ uv run pinchpilot desktop
 |---|---|---|
 | 桌面界面 | Python 3.11 + PySide6 | 共用界面、预览、任务与采集 |
 | 感知 | OpenCV + MediaPipe Hand Landmarker | 相机图像到 21 个手部关键点 |
-| 特征与模型 | NumPy + scikit-learn | 归一化几何特征、RF/SVM、分组评测 |
+| 接触模型 | PyTorch（训练，`--extra ml`）、scikit-learn、NumPy | 规则、随机森林、时序 CNN、手指共享 CNN；导出后用 NumPy 实时推理，运行时不需要 PyTorch |
+| 旧手形分类 | NumPy + scikit-learn | v0.1–v0.12 的归一化几何特征、RF/SVM、分组评测 |
 | 交互 | 纯 Python 状态机 | 张开后启用、确认、防抖、按下/释放生命周期 |
 | 系统接口 | macOS Quartz / Windows Win32 | 光标移动、左右键、拖拽、旧基线滚动与停止键 |
 | 实验产物 | JSONL、joblib、matplotlib | 数据、模型、指标、混淆矩阵 |
 
-MediaPipe 是复用的预训练视觉模型；本项目训练的是关键点之上的手形分类器。个人校准调整规则阈值，不等同于模型微调。当前没有自训练深度网络。
+MediaPipe 是复用的预训练视觉模型；本项目训练的是关键点之上的接触判定模型：看最近 8 帧，判断中指、食指、无名指是否碰到拇指。内置的时序 CNN 和调过的规则用三个人的全部 12 段录制训练，对新用户的预期准确率看留一人测试的分数。
 
-## 数据与训练
+## 接触模型：数据、比较与导出
 
-完整流程见 [采集与实验协议](docs/EXPERIMENTS.md)。每位参与者用固定编号，场次间重新摆位；标签由录制者选择，不使用规则预测充当监督标签。
+在源码目录里，对一个录制文件夹运行：
+
+```sh
+uv run pinchpilot ml-pool <recordings>
+uv run --extra ml pinchpilot ml-cv <recordings> --settings experiments/contact/cnn.json
+uv run --extra ml pinchpilot ml-cv <recordings> --settings experiments/contact/cnn.json --final-test
+uv run --extra ml pinchpilot ml-export <recordings> --settings experiments/contact/cnn.json --candidate "旋转＋缩放＋噪声" --epochs 22 --output <folder>
+```
+
+把 `cnn.json` 换成 `rules.json`、`forest.json` 或 `finger_cnn.json` 就是另外三种模型；四个设置文件是 10/13 冻结时的版本。每份报告都记录了数据指纹、代码版本和设置。12 段录制、复核标签和抽查记录在组内的私有数据仓库里（课程提交里附了一份），只有关键点、没有图像。详细步骤见 [模型训练与比较说明](docs/MODEL_COMPARISON.md)。
+
+## 旧版手形分类流程（v0.1–v0.12）
+
+最早的手形分类流程，保留作对照；最终的接触模型用上一节的命令。完整流程见 [采集与实验协议](docs/EXPERIMENTS.md)。每位参与者用固定编号，场次间重新摆位；标签由录制者选择，不使用规则预测充当监督标签。
 
 ```sh
 uv run pinchpilot inspect-data --data data/recordings
@@ -192,6 +220,7 @@ uv run python scripts/check_motion_tuning.py
 - [手势数据录制说明](docs/RECORDING_PROTOCOL.md)
 - [标签检查说明](docs/LABEL_REVIEW.md)
 - [模型训练与比较说明](docs/MODEL_COMPARISON.md)
+- [内部试点](docs/PILOT.md)
 - [验证记录与待实测事项](docs/VALIDATION.md)
 - [设计与模块边界](docs/superpowers/specs/2026-09-21-pinchpilot-design.md)
 - [小幅移动设计](docs/superpowers/specs/2026-09-21-small-motion-design.md)
