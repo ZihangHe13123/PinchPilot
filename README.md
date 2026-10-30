@@ -1,164 +1,77 @@
 # PinchPilot
 
-用普通电脑摄像头进行捏合交互的课程研究原型。研究目标是：**以尽可能少的辅助动作和尽可能小的手部活动幅度，稳定完成桌面操控**，并检验误操作、响应速度和主观费力度。
+[中文说明](README.zh-CN.md)
 
-**课程最终版 v0.20.0（2026-10-30 提交）。** 三位组员按屏幕提示录了 12 段手势数据（约 2.5 小时、205,141 个带复核标签的窗口；只存手部关键点，不存图像），在同一套留一人协议下比较了四种接触判定模型。所有设置在 10/13 冻结后只测了一次，随后用盲测试点选出默认模型。桌面程序支持 macOS 和 Windows，界面有中文和英文，可以切换只留摄像头预览的小窗。
+PinchPilot turns an ordinary webcam into a mouse controlled by small finger movements. The forearm rests on the desk; a pinch of thumb and middle finger moves the pointer, and light taps of the index or ring finger on the thumb click, drag and right-click. It was built as the course project of Group 15 (Wei Yi, He Zihang, Chi Yongjun) in the NUS-ISS Pattern Recognition Systems practice module.
 
-| 接触判定 | 留一人测试 macro-F1 |
+The pattern recognition problem: MediaPipe gives 21 hand keypoints in every frame, but not whether two fingertips are touching. PinchPilot decides, every frame, whether the middle, index and ring finger touch the thumb.
+
+## Final version
+
+**v0.20.0, submitted on 30 October 2026.** The three of us recorded twelve guided sessions (about 2.5 hours, 205,141 windows with reviewed labels; only hand keypoints are stored, never images) and compared four contact recognisers under one leave-one-person-out protocol. All settings were frozen on 13 October and tested once; a blinded pilot then chose the default model.
+
+| Contact recogniser | Macro-F1 on held-out people |
 |---|---|
-| 调过的规则 | 0.885 |
-| 时序 CNN（默认） | 0.863 |
-| 手指共享 CNN | 0.860 |
-| 随机森林 | 0.840 |
-| 原来的固定阈值（基线） | 0.771 |
+| Tuned rule | 0.885 |
+| Temporal CNN (default) | 0.863 |
+| Finger-shared CNN | 0.860 |
+| Random forest | 0.840 |
+| Original fixed thresholds (baseline) | 0.771 |
 
-侧对镜头的手是最难的情况：固定阈值降到 0.42，四个训练过的模型保持在 0.68–0.74。[内部试点](docs/PILOT.md)里三个人都把时序 CNN 排在第一（NASA-TLX 26.4，调过的规则 29.2，固定阈值 54.2），所以它是默认；调过的规则和固定阈值仍可在「接触判定」里切换。数字和过程见 [验证记录](docs/VALIDATION.md)，课程提案和第一次展示见 [docs/course](docs/course/README.md)。
+Side-on hands are the hardest case: the fixed thresholds fall to 0.42 there, while the four trained recognisers stay between 0.68 and 0.74. In the blinded [pilot](docs/PILOT.md) all three of us ranked the temporal CNN first, with the lowest workload (NASA-TLX 26.4, against 29.2 for the tuned rule and 54.2 for the fixed thresholds), so it is the default; the tuned rule and the fixed thresholds remain selectable. Every number comes from the project's own result files; the dated records are in [docs/VALIDATION.md](docs/VALIDATION.md).
 
-录制步骤见 [手势数据录制说明](docs/RECORDING_PROTOCOL.md)，标签的逐段复核和组员间抽查见 [标签检查说明](docs/LABEL_REVIEW.md)，模型比较见 [模型训练与比较说明](docs/MODEL_COMPARISON.md)，交互测试台和诊断见 [诊断与测试指南](docs/EVALUATION_TOOLS.md)。
+## Download and run
 
-「兼容定位 · 平移＋转腕」沿用熟悉的画面位置方向，无需腕动方向校准。整手平移与自然转腕共用恒定增益精细滤波，掌部提供有界防抖辅助，握持增加姿态尺度处理及短暂异常后的原地恢复。见 [兼容定位试用](docs/COMPATIBLE_TRIAL.md) 和 [桌面完整说明](docs/DESKTOP_TRIAL.md)。
+Portable archives are on the [v0.20.0 release](https://github.com/ZihangHe13123/PinchPilot/releases/tag/v0.20.0). They carry their own Python runtime, dependencies, hand model and both built-in contact models; no installation is needed.
 
-## 下载和启动
+- **macOS** (Apple silicon, macOS 14 or later): unzip `PinchPilot-0.20.0-macOS-arm64.zip`, keep the whole folder, and double-click `Start-English.command` (`Start.command` opens the Chinese interface). If macOS blocks it, right-click the file, choose Open and confirm.
+- **Windows 10/11** (64-bit): extract `PinchPilot-0.20.0-Windows-x64.zip` completely, for example to `D:\PinchPilot`, and double-click `Start-English.cmd` (`Start.cmd` for Chinese). The Windows archive passed its build-time checks but has not been run on Windows hardware; the source version ran on two members' Windows laptops throughout data collection.
+- **No camera:** `Demo.command` / `Demo.cmd` opens a synthetic demonstration.
 
-当前便携归档与源码同为 v0.20.0。旧便携包与对照报告按原样保留。退出旧窗口后启动，确认标题版本；归档没有复制开发机个人设置或试用日志。
-
-便携包在 [Release v0.20.0](https://github.com/ZihangHe13123/PinchPilot/releases/tag/v0.20.0)。
-
-Windows 使用 `PinchPilot-0.20.0-Windows-x64.zip`：全部解压后双击 **Start.cmd**（英文界面双击 **Start-English.cmd**），无需安装 Python/uv，模型随包附带。详见 [Windows 试用说明](docs/WINDOWS_TRIAL.md)。
-
-Mac 使用 `PinchPilot-0.20.0-macOS-arm64.zip`：适用于 M 系列 Mac、macOS 14+，解压后双击 **Start.command**（英文界面双击 **Start-English.command**）。两平台均带齐运行环境、模型、源码快照和SHA-256清单；详见 [Mac 归档说明](docs/MACOS_ARCHIVE.md)。构建命令：`uv run python scripts/build_macos_portable.py`。
-
-源码方式：Mac 双击 **launch_desktop_mac.command**；Windows 双击 **launch_desktop_windows.cmd**。或在项目目录执行：
-
-```sh
-uv run pinchpilot desktop
-```
-
-**启动相机 → 启用鼠标控制 → 食指移开、拇中轻捏接管。** 从当前系统光标位置开始。启动时相机和控制均关闭，手感设置会保留。先退出占用相机的旧 Demo；前臂支撑在桌面或扶手，让摄像头看清手和指尖。
-
-**识别使用完整相机画面，预览虚线只是鼠标映射范围，不是检测裁剪框。** 如果手常从下沿或两侧出去，先调整笔记本屏幕角度，使取景覆盖前臂有支撑时的手位。「画面边缘提醒」默认开启，可关闭；看到提示时，普通移动松中指、移回画面内、再捏回；拖拽保持食拇捏合，只松中指换位；滚动先收回 V。已经丢失控制手时仍按原逻辑松键，恢复可见后正常重新接管，不能在画面外继续跟踪。
-
-| 操作 | 动作 |
-|---|---|
-| 移动 | 拇中捏住；位置模式移动捏合点，腕动模式转动手腕 |
-| 左键 | 食拇短捏，松食指完成点击 |
-| 双击 | 同一位置连续食拇短捏两次，中间松开食指；节奏遵循系统双击速度 |
-| 右键 | 食指移开，拇指＋无名指轻捏 |
-| 拖拽 | 食拇保持捏合，按下后约 0.30 秒进入拖拽；松食指放下 |
-| 滚轮 | 食中指做 V，无名指/小指弯曲，拇指与指尖分开；保持片刻后上下轻移翻页，收指停止 |
-| 锁定 / 换位 | 松中指锁住位置，仍可点击；捏回后从原位置继续 |
-| 停止 | 全局 Esc 或窗口「停止控制」 |
-
-**英文界面**：`uv run pinchpilot desktop --lang en`，或先设环境变量 `PINCHPILOT_LANG=en`；测试台、关键点采集窗口和 `ml-review` 复核窗口一起变成英文（`ml-review` 同样可加 `--lang en`）。只翻译屏幕上显示的文字，录制、标签和报告文件不变；默认仍是中文。
-
-**小窗模式**：点「小窗模式 · F9」或按 F9，窗口缩成只剩摄像头预览和当前状态的小窗，置顶放在屏幕右下角，边用边看镜头视角；再按 F9、双击预览或点「恢复完整窗口」回到原来的大小和位置。小窗的位置会记住。
-
-右键、拖拽、滚轮、预览、置顶和本地记录都有开关。「展开手感设置」中的移动灵敏度滑条为 **0.10×～2.00×**，向左更慢，1.00× 是原默认速度，原最慢的 40% 档对应 0.75×；松开滑条才应用，支持恢复默认和保存旧设置。滚动速度单独调整。修改参数后重新启用鼠标控制。
-
-同一区域可选择「原版 · 对照」「精细 · 小幅微调」「自适应 · 实验」。精细模式优先让小幅修正有响应；自适应模式随速度改变增益。全新配置默认精细；有旧版设置但没有模式字段时迁移为原版，保留此前手感，请手动选择精细试用。已保存的新版模式照常恢复。
-
-精细/自适应模式可做「6 秒静止校准」：启动相机，支撑前臂，拇中捏住不动，食指和无名指移开。程序先关闭鼠标控制，准备1秒、采集5秒，结束后**不会自动恢复输入**。校准只估计静止波动，可能减少抖动，也可能抑制小修正；不舒服可「清除静止校准」或切回原版。参数与摘要可本地保存，校准关键点不落盘。具体取舍和合成数据见 [移动调优试用](docs/MOTION_TUNING_TRIAL.md)。
-
-窗口显示处理 FPS、推理耗时、读帧后帧龄、跟踪丢失及按钮/滚轮发送计数，不冒充真人准确率。默认只保存本地性能与事件摘要，不保存视频或图像。
-
-右侧「控制手」可选自动锁定、只用右手或只用左手。自动模式先只露出要控制的一只手，看到锁定提示后另一只手可入镜；控制手离开时暂停、释放按键，不自动换到另一只手。换手需重新启动相机，或更改控制手选项后启动相机。双手太近、遮挡或左右手类别不明确时会暂停，分开并重新捏住拇中后恢复。
-
-支持一只控制手、主屏幕，尚不支持跨屏。macOS 和 Windows 共用核心和界面；源码方式在两位组员的 Windows 笔记本上用于整个数据采集，Windows 便携包只做过构建时检查，还没在 Windows 电脑上运行过。接触判定默认用内置的时序 CNN：模型只判断“碰到”，松开仍看测得的距离，所以模型判错最多影响一次点击，不会让按键卡住。
-
-## 研究界面与旧基线
-
-应用内目标任务、静止抖动诊断和原有采集/训练工具保留。Mac 使用 `launch_tripod_mac.command`，Windows 使用 `launch_tripod_windows.cmd`，或 `uv run pinchpilot gui --interaction tripod`。这个研究入口中的三指模式仍只操作应用内练习区；桌面控制使用上面的独立入口。
-
-原捏合基线使用 `launch_mac.command` / `launch_windows.cmd` 或 `uv run pinchpilot gui`：手掌定位、食拇捏合点击/拖拽，V 手势滚动；它与三指方案的手势定义不同。旧单指因用户报告严重晃动和难用已搁置。
-
-## 已暂搁置的单指 Demo
-
-用户实测反馈为抖动很大、难以使用，因此暂停此方向。以下入口仅保留用于复现对照，不再作为优先试用方案；历史工程检查不代表真人可用。
-
-先退出旧窗口，再双击 `launch_flex_mac.command` 试主动轻弯，或 `launch_dwell_mac.command` 试停留点击。Windows 使用对应的 `launch_flex_windows.cmd` / `launch_dwell_windows.cmd`。这些入口只选择模式，不自动打开相机。
-
-启动摄像头 → 让前臂获得支撑、手部保持可见 → 舒展食指片刻 → 切到「点击与拖拽实验」→「开始 8 个目标」。也可以从右上方的模式选择框随时切换。**只需要主动操作食指，但不能只露出孤立指尖。** 如果舒适手位不在相机视野内，需先调整机位；本轮不声称软件已经解决悬臂疲劳。
-
-| 模式 | 点击操作 | 反馈与参数 |
-|---|---|---|
-| 单指 · 轻弯点击 | 定位后轻弯，再恢复；恢复确认时点击一次 | 弯曲时冻结指针；可选较轻、默认、更明显的点击幅度 |
-| 单指 · 停留点击 | 先移动，停住等进度环完成 | 默认 0.8 秒，可调 0.4–2 秒；移开取消，点击后需移开才能再点击 |
-
-两种模式都有三档移动灵敏度、重新定位和 Esc 暂停。修改参数或切换模式结束当前任务，请重新开始一轮。练习结果保存在 `reports/tasks/`，含模式和参数；合成演示带独立来源标记。
-
-```sh
-uv run pinchpilot gui --interaction finger-flex
-uv run pinchpilot gui --interaction finger-dwell
-# 无相机回放仅用于查看交互逻辑：
-uv run pinchpilot gui --interaction finger-dwell --demo
-```
-
-## 原捏合基线的小幅移动与休息
-
-v0.2 默认选择「小幅移动 · 30% 范围」，即相机画面宽高各 30% 的手掌参考点位移映射到全屏。原来需要移动 60% 的画面距离；在相机、姿势不变时，同样屏幕位移所需的画面位移约减半。这不等于疲劳或实际手臂位移已经测得减半。
-
-| 范围 | 相对原版的画面位移 | 适用方式 |
-|---|---|---|
-| 30%（默认） | 约一半 | 先用这个体验 |
-| 20% | 约三分之一 | 想进一步减少位移时尝试；也更容易放大抖动 |
-| 60% | 与原版一致 | 对照或需要较低灵敏度 |
-
-默认勾选「握拳休息，张开后从原光标位置继续」：握拳或丢手暂停后，可先调整手位再张开。拖拽时握拳会释放左键、结束拖拽，不能在休息期间继续按住。松开捏合后也保留最后光标位置，减少回跳。启用系统控制时以当前主屏光标为起点；应用内任务以屏幕中心为起点。
-
-虚线框会随重新接管的手位调整。若它靠近画面边缘，可握拳并把手移回相机看得清的位置。范围设置只改变指针灵敏度，滚轮增益保持原有尺度。切换范围/恢复开关会退出系统控制并结束当前任务；个人校准加载或恢复默认仅更改捏合阈值，保留移动设置。
-
-完整对照原来的映射时，选择 **60% 并取消休息后恢复**。命令行离线回放的默认配置仍是原始固定映射；传入校准配置可指定其他映射。新版本不会热更新已运行的程序：先按 Esc 停止控制，退出旧窗口，再用启动脚本重新打开。
-
-## Windows 源码安装与便携包构建
-
-普通试用优先使用上面的便携 ZIP。维护者可运行 `uv run python scripts/build_windows_portable.py` 重建，产物在 `dist/`；构建需要联网，运行不需要下载 Python/模型。构建脚本核对官方运行时、模型与锁定依赖的哈希，并保留第三方许可证。可在 Mac 组装 Windows 预编译依赖，但这不代表已在 Windows 执行验证。
-
-首版目标环境：Windows 10/11 x64、macOS Apple Silicon。当前依赖锁未覆盖 Intel Mac；Windows ARM 暂未列为验收目标。Windows 真机摄像头与输入测试仍待完成。
-
-将整个源码包解压到普通目录，例如 `C:\Projects\PinchPilot`。先按 [uv 官方安装说明](https://docs.astral.sh/uv/getting-started/installation/) 安装 uv，Windows 可运行：
-
-```powershell
-winget install --id=astral-sh.uv -e
-```
-
-重新打开终端，再双击 **launch_desktop_windows.cmd**。启动脚本会准备 Python 3.11 虚拟环境并按 `uv.lock` 安装依赖。首次安装需要联网。也可在两种系统上执行：
+From the source code, with [uv](https://docs.astral.sh/uv/getting-started/installation/) installed:
 
 ```sh
 uv sync --locked
-uv run pinchpilot doctor
-uv run pinchpilot desktop --demo
-uv run pinchpilot desktop
+uv run pinchpilot desktop --lang en
 ```
 
-无需 GPU、CUDA、云端账号或 API key。不要把 `.venv` 从 Mac 复制到 Windows；每台电脑由 uv 创建自己的环境。项目目录尽量不要包含冒号；原课程文件夹名称中的冒号曾导致本机 uv 路径解析失败。
+`--lang en` (or the environment variable `PINCHPILOT_LANG=en`) shows every window in English; the default is Chinese. No GPU, account or API key is needed.
 
-## 权限和常见问题
+## Use
 
-- **Mac 摄像头：** 在「系统设置 → 隐私与安全性 → 摄像头」允许实际启动进程访问。授权后重新启动程序。
-- **Mac 系统控制：** 在「辅助功能」中授权启动本程序的 Terminal / 应用。相机权限与辅助功能权限是两项独立权限。`doctor` 只查询，不自动修改授权。
-- **Mac 全局 Esc：** 程序也检查输入监控授权；如有提示，在「输入监控」中为启动进程授权并重启。
-- **Windows 相机：** 开启「隐私和安全性 → 摄像头 → 允许桌面应用访问摄像头」。被会议软件占用时先释放摄像头，必要时更换相机编号。
-- **Windows 输入：** 先在普通权限窗口测试。Win32 输入注入可能无法作用于管理员窗口。程序不自动提升权限。
-- **光标太抖 / 误捏合：** 改善光线、减少指尖遮挡、先做个人校准，再采集不同角度的数据。滤波和时间确认会增加少量延迟，需要实测取舍。
-- **找不到接触模型：** 点「展开手感设置」，右侧向下滚动到「接触判定」；默认是内置的时序 CNN，自己导出的模型放进工作区的 `data/contact_models/` 也会列出来。
+**Start camera → Enable mouse control → move the index away from the thumb and pinch thumb and middle finger to take the pointer.** The pointer starts from where the system cursor is. Rest the forearm on the desk where the camera sees the hand and fingertips.
 
-## 技术栈
+| Action | Gesture |
+|---|---|
+| Move | Hold thumb and middle finger together and move the hand or wrist slightly |
+| Click | A quick thumb–index tap; the pointer freezes while the index approaches, so the click lands where you aimed |
+| Double click | Two taps at the same place, releasing the index in between |
+| Right click | Index away, a light thumb–ring tap |
+| Drag | Hold thumb and index for about 0.3 s, move, release the index to drop |
+| Scroll | A V with index and middle finger, then move slightly up or down; fold the fingers to stop |
+| Reposition | Release the middle finger: the pointer stays put; grip again to continue from there |
+| Stop | Esc anywhere, or Stop control |
 
-| 层 | 实现 | 用途 |
-|---|---|---|
-| 桌面界面 | Python 3.11 + PySide6 | 共用界面、预览、任务与采集 |
-| 感知 | OpenCV + MediaPipe Hand Landmarker | 相机图像到 21 个手部关键点 |
-| 接触模型 | PyTorch（训练，`--extra ml`）、scikit-learn、NumPy | 规则、随机森林、时序 CNN、手指共享 CNN；导出后用 NumPy 实时推理，运行时不需要 PyTorch |
-| 旧手形分类 | NumPy + scikit-learn | v0.1–v0.12 的归一化几何特征、RF/SVM、分组评测 |
-| 交互 | 纯 Python 状态机 | 张开后启用、确认、防抖、按下/释放生命周期 |
-| 系统接口 | macOS Quartz / Windows Win32 | 光标移动、左右键、拖拽、旧基线滚动与停止键 |
-| 实验产物 | JSONL、joblib、matplotlib | 数据、模型、指标、混淆矩阵 |
+**Mini view:** F9, or the Mini view button, keeps only the camera preview and the current state in a small window on top of other windows; F9 again or a double click on the preview brings the full window back.
 
-MediaPipe 是复用的预训练视觉模型；本项目训练的是关键点之上的接触判定模型：看最近 8 帧，判断中指、食指、无名指是否碰到拇指。内置的时序 CNN 和调过的规则用三个人的全部 12 段录制训练，对新用户的预期准确率看留一人测试的分数。
+The whole camera image is used for detection; the dashed box in the preview is only the pointer's mapping area. If the hand often leaves the image, tilt the laptop screen. The frame edge warning tells you when the hand is near the edge.
 
-## 接触模型：数据、比较与导出
+**Settings** (Show feel settings): pointer speed 0.10× to 2.00×, jitter filter, drag delay, scroll speed, control hand (automatic lock, right only or left only), positioning mode, and the **contact model**: Temporal CNN · built-in (default), Tuned rule · built-in, Original rule · fixed distance thresholds, or a model you exported into the workspace's `data/contact_models/`. Changing a setting stops control; enable it again afterwards.
 
-在源码目录里，对一个录制文件夹运行：
+**Testbench:** Open the testbench runs six tasks on a virtual cursor (small-target click, double click, drag and drop, fine correction, right click, scroll and stop) while the system mouse stays paused.
+
+## How it works
+
+Camera frames go to MediaPipe Hand Landmarker; PinchPilot locks onto one control hand. Two paths run on every frame:
+
+- the **pointer path** turns the thumb–middle grip into smooth pointer motion (filtering, clutch, freeze before a click);
+- the **contact path** decides touches. A contact model looks at the last 8 frames (about 233 ms at 30 fps, never future frames; 67 features per frame: palm-normalised keypoints, three fingertip distance ratios, the frame interval) and decides only whether a finger touches. Releasing a button still follows the measured distance, so a model error can cost one click but never leave a button held.
+
+Models are trained offline and exported as a folder (`model.json` plus `weights.npz`) that runs with NumPy in about 0.1 ms per frame; the application does not need PyTorch.
+
+## Contact models: data, comparison and export
+
+Run from the source code on a folder of guided recordings:
 
 ```sh
 uv run pinchpilot ml-pool <recordings>
@@ -167,67 +80,55 @@ uv run --extra ml pinchpilot ml-cv <recordings> --settings experiments/contact/c
 uv run --extra ml pinchpilot ml-export <recordings> --settings experiments/contact/cnn.json --candidate "旋转＋缩放＋噪声" --epochs 22 --output <folder>
 ```
 
-把 `cnn.json` 换成 `rules.json`、`forest.json` 或 `finger_cnn.json` 就是另外三种模型；四个设置文件是 10/13 冻结时的版本。每份报告都记录了数据指纹、代码版本和设置。12 段录制、复核标签和抽查记录在组内的私有数据仓库里（课程提交里附了一份），只有关键点、没有图像。详细步骤见 [模型训练与比较说明](docs/MODEL_COMPARISON.md)。
+Use `rules.json`, `forest.json` or `finger_cnn.json` for the other three recognisers; the four settings files are as frozen on 13 October 2026, and the candidate names inside them are in Chinese ("旋转＋缩放＋噪声" is rotation + scale + noise). Every report records the data fingerprint, the code version and the settings. Validation is nested leave-one-person-out: each person is held out in turn, and the other two choose the settings, one training while the other validates, over three seeds.
 
-## 旧版手形分类流程（v0.1–v0.12）
+The recordings, reviewed labels and cross-checks are kept in the team's private data repository (a copy went with the course submission). The tools that made them are in the application: guided recording with an animated demonstration hand and a live palm-angle check, label review and cross-checking (`pinchpilot ml-review`).
 
-最早的手形分类流程，保留作对照；最终的接触模型用上一节的命令。完整流程见 [采集与实验协议](docs/EXPERIMENTS.md)。每位参与者用固定编号，场次间重新摆位；标签由录制者选择，不使用规则预测充当监督标签。
+## Tech stack
 
-```sh
-uv run pinchpilot inspect-data --data data/recordings
-uv run pinchpilot train --data data/recordings --output reports/forest_01 --model forest
-uv run pinchpilot train --data data/recordings --output reports/svm_01 --model svm
-uv run pinchpilot calibrate --participant P01 --output data/profiles/P01.json
-```
+| Layer | Implementation | Purpose |
+|---|---|---|
+| Interface | Python 3.11, PySide6 | Desktop window, mini view, testbench, recording and review windows |
+| Perception | OpenCV, MediaPipe Hand Landmarker | Camera image to 21 hand keypoints |
+| Contact models | PyTorch (training, `--extra ml`), scikit-learn, NumPy | Tuned rule, random forest, temporal CNN, finger-shared CNN; NumPy inference at run time |
+| Interaction | Python state machine | Grip, contacts, press and release, drag, scroll, safety pauses |
+| System input | macOS Quartz, Windows Win32 | Pointer, buttons, scrolling, global Esc |
+| Quality | pytest (818 tests), Ruff, GitHub Actions on macOS 15 and Windows Server 2022 | Every pull request |
 
-默认按参与者划分；同一人的帧不会同时出现在训练集与测试集。至少要有两个完整分组才能运行，正式研究建议更多参与者。`--group-by session` 检验新场次，不代表跨人泛化。训练会产生 `model.joblib`、`metrics.json`、`confusion.png`；报告包含拒识后的表现，并保留不拒识的诊断分数。只有你信任的本项目模型才应加载，因为 joblib 使用 Python pickle。
+## Permissions and common problems
 
-原始视频不保存、不上传。关键点录制位于 `data/recordings/`；校准位于 `data/profiles/`；离散交互事件位于 `data/events/`；评测和任务记录位于 `reports/`。这些目录默认不进入 Git 和源码交付包。
+- **macOS camera:** allow the launching app under System Settings → Privacy & Security → Camera, then start again.
+- **macOS pointer control:** allow it under Accessibility; the global Esc key also needs Input Monitoring.
+- **Windows camera:** allow desktop apps to use the camera under Settings → Privacy and security → Camera; close other programs that use it.
+- **Windows input:** input injection may not reach windows running as administrator; PinchPilot does not elevate itself.
+- **Jittery pointer or false pinches:** improve the lighting, keep the fingertips visible, lower the pointer speed or use the stronger jitter filter.
 
-## 协作方式
+PinchPilot stores no video or images. Keypoint recordings, local logs and reports live in `data/` and `reports/` of the workspace, which are not part of the repository.
 
-`main` 分支受保护，不能直接推送，也不能强制推送或删除。改动按下面的步骤合并：
+## Development
 
-1. 从最新的 `main` 新建分支，在分支上提交并推送。
-2. 在 GitHub 上发起 Pull Request。
-3. 等自动检查在 macOS 和 Windows 上都通过后合并；这两项检查是合并的必需条件。不要求他人审批。
-
-自动检查在发起 Pull Request 后运行，之后每次向该分支推送都会重新运行。只推送分支、没有发起 Pull Request 时不会运行；需要时可以在 GitHub 的 Actions 页面手动运行。
-
-提交前可以先在本地运行下一节的检查命令。此前在 Windows 上偶发失败的两项测试已经修复，经过见 [验证记录](docs/VALIDATION.md)；自动检查失败时请先看日志确认原因。
-
-## 工程检查与阅读入口
+`main` accepts changes only through pull requests, which must pass the checks on macOS and Windows:
 
 ```sh
 uv run ruff check src tests
 uv run pytest -q
 uv run pinchpilot desktop --demo --smoke-seconds 3
-uv run pinchpilot gui --demo --smoke-seconds 3
-uv run python scripts/check_single_finger.py
-uv run python scripts/check_tripod.py
-uv run python scripts/check_motion_tuning.py
 ```
 
-- [课程提案与首次汇报幻灯片](docs/course/README.md)
-- [项目定位、课程要求与里程碑](docs/PROJECT_PLAN.md)
-- [桌面测试版启动、数据与开关](docs/DESKTOP_TRIAL.md)
-- [v0.11.0 兼容定位：平移与转腕](docs/COMPATIBLE_TRIAL.md)
-- [v0.10.1 旧角度实验与姿势引导校准](docs/WRIST_TRIAL.md)
-- [v0.9.1 画面边缘提醒与换位试用](docs/CAMERA_FRAMING_TRIAL.md)
-- [v0.9 三种移动模式与静止校准试用](docs/MOTION_TUNING_TRIAL.md)
-- [后续打磨路线与 ML 研究计划](docs/FUTURE_PLAN.md)
-- [采集与实验协议](docs/EXPERIMENTS.md)
-- [手势数据录制说明](docs/RECORDING_PROTOCOL.md)
-- [标签检查说明](docs/LABEL_REVIEW.md)
-- [模型训练与比较说明](docs/MODEL_COMPARISON.md)
-- [内部试点](docs/PILOT.md)
-- [验证记录与待实测事项](docs/VALIDATION.md)
-- [设计与模块边界](docs/superpowers/specs/2026-09-21-pinchpilot-design.md)
-- [小幅移动设计](docs/superpowers/specs/2026-09-21-small-motion-design.md)
-- [单指 Demo 操作与试用记录](docs/SINGLE_FINGER_DEMOS.md)
-- [三指定位点击与抗抖诊断](docs/TRIPOD_DEMO.md)
-- [右键与拖拽体验顺序](docs/RIGHT_CLICK_DRAG_TRIAL.md)
-- [少动作、小幅度的目标与指标](docs/superpowers/specs/2026-09-21-minimal-motion-design.md)
-- [参考与第三方组件](THIRD_PARTY.md)
+Portable archives are built with `uv run python scripts/build_macos_portable.py` and `scripts/build_windows_portable.py`.
 
-状态机与输入结构测试使用合成帧/模拟接口，不能视为真实摄像头识别率或 Windows 真机验收。CI 在 GitHub Actions 上运行：每个 Pull Request 和 `main` 的每次更新都会在 macOS 与 Windows 上执行格式检查、测试、合成演示启动、三个检查脚本和打包。
+## AI assistance
+
+Anthropic Claude (Claude Code) and OpenAI Codex assisted with the implementation, tests, experiment tooling, documentation and figures. The team designed the gestures, the recording protocol and the pilot, recorded and reviewed all data, cross-checked each other's labels, took part in the pilot and reviewed the results. Generated code was accepted only after review and the automated tests on macOS and Windows. Every number in this README and in the validation record comes from a result file produced by the project's own tools.
+
+## Documentation
+
+Most documents are in Chinese; the [Chinese README](README.zh-CN.md) also covers the earlier interaction modes kept for comparison (palm-pointing baseline, single-finger demos, small-motion range).
+
+- [Validation record](docs/VALIDATION.md): dated results of every test, study and release
+- [Pilot](docs/PILOT.md): the blinded comparison of the three contact settings
+- [Recording protocol](docs/RECORDING_PROTOCOL.md), [label review](docs/LABEL_REVIEW.md), [model comparison](docs/MODEL_COMPARISON.md)
+- [Desktop guide](docs/DESKTOP_TRIAL.md), [Windows guide](docs/WINDOWS_TRIAL.md), [macOS archive](docs/MACOS_ARCHIVE.md)
+- [Diagnostics and testbench](docs/EVALUATION_TOOLS.md)
+- [Course proposal and first presentation](docs/course/README.md)
+- [Third-party components](THIRD_PARTY.md)
